@@ -1,0 +1,380 @@
+@startuml
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+participant "Extenal System" as ES
+
+ESB -> ESB: 1. Reads the file from SFTP server
+
+alt FileStatus = FILE_NEW
+    ESB -> DB: Insert File Details into INWARD_FILES
+    DB --> ESB: Return FILE_ID
+else FILE_FAILED or FILE_ERROR
+    ESB -> ESB: Update Shared Variables
+end
+
+alt Checks missing of mandatory fields (MessageType,InterfESBName,LogPoint,BTID,UUID) MissingFields = true
+    ESB-> ESB: throw exception (EAI_FILE_MISSING)
+end
+
+alt LogReq = 'Y'
+    ESB -> MQ: send message to EAI.MSGLOG.MGT.IN queue
+else
+    ESB -> ESB: No Action
+end
+
+ESB->ESB: 3. Casting the message in BLOB format and check transaction type
+
+alt trn_type = 'U'
+    ESB -> ESB: Propagate to RCD_UPI node
+else
+    ESB -> ESB: Propagate to ResetContentDescriptor node
+end
+
+ESB->ESB: 4. Convert data into DFDL format. 
+
+ESB->ESB: 6. Transform fields into XML format
+
+ESB->ESB: 7. Setting Trn_Amount upto 2 decimal point
+
+
+ESB -> DB: Execute SQL (SELECT IFSC_CODE, ACTIVE_YN, IFSCTYPE FROM IFSC_MASTER)
+DB --> ESB: Return IFSC Data
+
+alt SELF_OTHER_BANK = 'S' AND InstitutionCD not starting with 'SIBL'
+    ESB -> ESB: Throw User Exception (Validation Failed)
+end
+
+ESB -> ESB: Iterate IFSC Data
+alt ! (SELF_OTHER_BANK = 'N' AND IFSCTYPE = 'NEFT_IFSC') || (SELF_OTHER_BANK = 'I' AND IFSCTYPE = 'IMPS_IFSC') || SELF_OTHER_BANK = 'U'
+    ESB -> ESB: Throw User Exception Validation failed
+end
+
+ESB -> DB: Execute SQL (SELECT SSLPROTOCOL, PAN_URL, PURPOSE FROM DUAL)
+DB --> ESB: Return PAN Validation Parameters
+
+ESB -> DB: Execute SQL (SELECT DISTINCT CBS_REPORT_CD FROM EXCHANGE_HOUSE_MASTER JOIN SENDER_MASTER WHERE SENDER_CD=?)
+DB --> ESB: Return CBS_REPORT_CD
+
+alt CBS_REPORT_CD = 'PHB-IBD' && PURPOSE contains InputRoot.XMLNSC.Generic_Type.Purpose && Transaction_Type = 'S'
+    ESB -> ES: PAN Validation Request is Created using SSLPROTOCOL, PAN_URL, PURPOSE
+end
+
+
+alt special_char in AccNo >0
+    ESB -> ESB : Special character not allowed in Account Number
+end
+alt beneficiary_name only numbers
+    ESB -> ESB : Beneficiary name contains only numbers
+end
+alt transaction_id is null 
+    ESB -> ESB : Trasaction ID is null
+end
+
+ESB -> DB: Execute SQL (SELECT FUTURE_TRANSACTION FROM SENDER_MASTER)
+DB --> ESB: Return FUTURE_TRANSACTION
+
+alt FUTURE_TRANSACTION = 'N'
+    alt Transaction_Date > CURRENT_DATE
+        ESB -> ESB: Error: "TRN_DATE is greater than CURRENT_DATE"
+    end
+else FUTURE_TRANSACTION <> 'N'
+    alt Transaction_Date < CURRENT_DATE
+        ESB -> ESB: Error: "TRN_DATE is less than CURRENT_DATE"
+    end
+end
+
+alt Transaction_Type <> 'U'
+    alt Beneficiary_Acc_No is NULL or Empty
+        ESB -> ESB: Beneficiary Account No. is NULL
+    end
+
+    alt Beneficiary_Name is NULL
+        ESB -> ESB: Beneficiary Name is NULL
+    end
+
+    alt Currency is NULL
+        ESB -> ESB: CURRENCY is NULL
+    else Currency is not INR
+        ESB -> ESB: CURRENCY is incorrect
+    end
+
+    ESB -> DB: Select count of exchange code from sender master 
+    DB --> ESB: Return EX_COUNT
+
+    alt EX_COUNT = 0
+        ESB -> ESB:  MIR is not present in sender master
+    else EX_COUNT > 0
+        ESB -> DB: Select AMOUNT, SERVICE_TAX_P FROM CHARGE_MASTER 
+        DB --> ESB: Return AMOUNT and SERVICE_TAX_P
+        
+        alt AMOUNT is NULL or 0
+            ESB -> ESB: Set BANK_CHARGES and BANK_TAX to 0
+        end
+    end
+
+    alt transacation_amount >  99999999
+            ESB -> ESB : Transation Amount is   greater tha 99999999
+    end
+
+    alt Transaction_ID exists in FILE
+        ESB -> ESB: Duplicate Sender Reference found in File
+    end
+
+    alt HOST_VALUE is 'EHH', 'EH', NULL, or empty
+        ESB -> DB: SELECT PURPOSECD_CHECK_YN FROM SENDER_MASTER 
+        DB --> ESB: Return PURPOSEYN
+        
+        alt PURPOSEYN is 'Y'
+            else
+                ESB -> DB: SELECT PURPOSE_CD FROM PURPOSE_MASTER 
+                DB --> ESB: Return PurposeCD
+                alt PurposeCD is empty or NULL
+                    ESB -> ESB: Invalid Purpose Code
+                end
+        end
+        
+    end
+end
+
+alt Transaction_Type = 'D'
+    ESB -> ESB: Extract CountryCode, PurposeCode, TransactionId, TransactionAmt, senderCD
+    ESB -> DB: Execute SQL (SELECT PURPOSE, COUNTRY FROM SENDER_MASTER JOIN EXCHANGE_HOUSE_MASTER WHERE SENDER_CD=?)
+    DB --> ESB: Return chkPurpose (PURPOSE, COUNTRY)
+
+    ESB -> DB: Execute SQL (SELECT PURPOSE_CD FROM PURPOSE_MASTER WHERE PURPOSE_CD=?)
+    DB --> ESB: Return chkPurposecheck (PURPOSE_CD)
+
+    ESB -> DB: Execute SQL (SELECT LOOKUP_CD FROM LOOKUP WHERE LOOKUP_CD=?)
+    DB --> ESB: Return chkCountrycheck (LOOKUP_CD)
+
+   alt chkPurpose.PURPOSE = 'Y' AND chkPurpose.COUNTRY = 'N'
+        ESB -> ESB: Check chkPurposecheck.PURPOSE_CD is NULL or empty
+        alt chkPurposecheck.PURPOSE_CD is NULL or empty
+            ESB -> ESB: Set MKCH_STATUS = 'Y'
+            ESB -> ESB: Call UpdateStatusLookupId (Invalid Purpose Code)
+        end
+    end
+
+    alt chkPurpose.PURPOSE = 'N' AND chkPurpose.COUNTRY = 'Y'
+        ESB -> ESB: Check chkCountrycheck.LOOKUP_CD is NULL or empty
+        alt chkCountrycheck.LOOKUP_CD is NULL or empty
+            ESB -> ESB: Set MKCH_STATUS = 'Y'
+            ESB -> ESB: Call UpdateStatusLookupId (Invalid Country Code)
+        end
+    end
+
+    alt chkPurpose.PURPOSE = 'Y' AND chkPurpose.COUNTRY = 'Y'
+        ESB -> ESB: Check chkPurposecheck.PURPOSE_CD or chkCountrycheck.LOOKUP_CD is NULL or empty
+        alt Either is NULL or empty
+            ESB -> ESB: Set MKCH_STATUS = 'Y'
+            ESB -> ESB: Call UpdateStatusLookupId (Invalid Purpose or Country Code)
+        end
+    end
+end
+
+alt Transaction_Type = 'S'
+    ESB -> DB: SELECT various fields FROM CBS_ACC_MAPPER WHERE FINACLE_ACC_NO = Beneficiary_Acc_No
+    DB --> ESB: Return CBS_ACC_MAPPER Data
+    
+    ESB -> DB: SELECT PURPOSE_CD, TRADE_ACC_CD, INSTI_CODE, UPTO_VALUE FROM PURPOSE_MASTER 
+    DB --> ESB: Return PurposeMaster Data
+    
+    ESB -> DB: SELECT DISTINCT CBS_REPORT_CD FROM EXCHANGE_HOUSE_MASTER 
+    DB --> ESB: Return CBS_REPORT_CD
+
+    alt CBS_REPORT_CD = 'PH_CORP'
+        alt IS_PERMIT_CORP = 0
+            ESB -> ESB: Transaction not permitted for Corporate Account Number
+        end
+    else
+        alt IS_PERMIT = 0
+            ESB -> ESB:  Transaction not permitted for Account Number
+        end
+    end
+end
+
+alt Transaction_Type = 'R'
+    alt Transaction_Amount <= RTGSMINAMT
+        ESB -> ESB:  Invalid Transaction Amount For RTGS
+    end
+    
+    alt Length(IFSC Code) <> 11
+        ESB -> ESB: Invalid SIZE of IFSC Code
+    else
+        alt check IFSC Code Starts with 'SIBL'
+            ESB -> ESB: ERROR : IFSC cannot be South Indian Bank
+        else
+            ESB -> DB: Query IFSC Code in IFSC_MASTER
+            DB --> ESB: Return IFSC_TYPE
+            alt IFSC_TYPE is empty
+                ESB -> ESB: Invalid IFSC Code
+            else
+                alt IFSC_TYPE = 'SIBL_IFSC'
+                    ESB -> ESB:  IFSC cannot be South Indian Bank
+                end
+            end
+        end
+    end
+end
+
+alt Transaction_Type = 'N'
+    ESB -> DB: Retrieve Trade Account Limits
+    DB --> ESB: Return Trade Limits
+    ESB -> DB: Query Purpose Code in PURPOSE_MASTER
+    DB --> ESB: Return Purpose Details
+    
+    ESB -> ESB: Validate Transaction Amount
+    alt Transaction Amount > TRD_LIMIT or TRD_LIMIT_BANK
+        ESB -> ESB: Value Limit is Exceed
+    end
+    
+    ESB -> ESB: Validate Transaction Reference Number Length
+    alt Length(Transaction Reference Number) not between 1 and 16
+        ESB -> ESB: Invalid Transaction Reference Number
+    end
+    
+    ESB -> ESB: Validate IFSC Code Length
+    alt Length(IFSC Code) <> 11
+        ESB -> ESB: Invalid SIZE of IFSC Code
+    else
+        ESB -> ESB: Check IFSC Code Prefix
+        alt Prefix(IFSC Code) = 'SIBL'
+            ESB -> ESB: IFSC cannot be South Indian Bank
+        else
+            ESB -> DB: Query IFSC Code in IFSC_MASTER
+            DB --> ESB: Return IFSC_TYPE
+            alt IFSC_TYPE is empty
+                ESB -> ESB: Invalid IFSC Code
+            else
+                alt IFSC_TYPE = 'SIBL_IFSC'
+                    ESB -> ESB: IFSC cannot be South Indian Bank
+                end
+            end
+        end
+    end
+    
+alt Notification Count <> 2
+        ESB -> ESB: SMS/EMAIL cannot be BLANK
+    end
+end
+
+
+alt Transaction_Type = 'I'
+    ESB -> DB: get max amount limits for IMPS
+    DB --> ESB: Return max limits
+    alt transacation_amount_limit> max limit 
+        ESB -> ESB: Limit Exceeds
+    end
+    alt Transaction_ID length not between 1 and 16
+    ESB -> ESB: Invalid Transaction Reference Number
+    alt IFSC_CODE lenght != 11
+        ESB -> ESB: Invalid IFSC Code Size
+    end
+
+        DB -> ESB: Return IFSC validity
+        alt IFSC_CODE is invalid
+            ESB -> ESB: Invalid IFSC Code
+        else IFSC_CODE is valid
+            ESB -> ESB: Check Remitter_Notification length
+            alt Invalid Remitter_Notification
+                ESB -> ESB: SMS/EMAIL cannot be BLANK
+                alt Remitter_Notification[1] = 'SMS'
+                    ESB -> ESB: Validate Mobile Number
+                    alt Invalid Mobile Number
+                        ESB -> ESB: Mobile Number is Invalid
+                    end
+                else Remitter_Notification[1] = 'EML'
+                    ESB -> ESB: Validate Email Format
+                    alt Invalid Email Format
+                        ESB -> ESB: Invalid e-Mail Format
+                    end
+                else Invalid value for SMS/EMail Field
+                    ESB -> ESB: Invalid value for SMS/EMail Field
+                end
+            end
+        end
+    end
+end
+
+
+alt Transaction_Type = 'U'
+    alt HOST = 'CORP'
+        ESB -> ESB:  Transaction Not Permitted For CORPORATE Customers 
+    end
+    alt UPI validation
+        alt UPI is NULL or length < 1
+        ESB -> ESB : Error: Upi ID is NULL or Blank
+        end
+            alt Invalid Beneficiary AccNo or IFSC
+            ESB -> DB: Query IFSC validity
+            DB --> ESB: Return IFSC validity
+            alt Invalid Beneficiary IFSC Code
+                ESB --> ESB:  Invalid Beneficiary IFSC Code
+            end
+        else Valid UPI
+            ESB -> ESB: Check UPI length and format
+            alt Invalid UPI
+                ESB --> ESB:  Please Enter Valid VPA
+            end
+        end
+    end
+
+    ESB -> DB: Query max amount for UPI
+    DB --> ESB: Return UPI max amount
+    ESB -> ESB: Check if Transaction_Amount > UPI_MAX_AMOUNT
+    alt Amount exceeds UPI_MAX_AMOUNT
+        ESB -> ESB:  Amount should be less than/equal 99,999
+    end
+
+    alt Check Transaction_ID length is not between 1 to 16
+    ESB -> ESB:  Invalid Transaction Reference Number
+    end
+    alt Remitter details
+        ESB -> ESB: Check RemitterAccNo length
+        alt Invalid RemitterAccNo
+            ESB -> ESB:  Invalid Sender Account Number
+        end
+        ESB -> ESB: Check RemitterIFSC length
+        alt Invalid RemitterIFSC
+            ESB -> ESB:  Invalid Sender IFSC
+        end
+    end
+end
+
+alt validation error exists
+    ESB -> ESB: Throw Exception Validation Error
+
+    else No Validation Errors
+    ESB -> ESB: Update TOTAL_VALID_AMOUNT
+    ESB -> ESB: Increment TOTAL_VALID_RECORDS
+
+    alt FILE_DATE is NULL
+        ESB -> ESB: update FILE_DATE to Transaction_Date
+    end
+
+    ESB -> DB: Query Role-based Limit from LIMIT_MASTER
+    DB --> ESB: Return ROLE_LIMIT
+
+    ESB -> ESB: Update SHARED_MSG_CNT
+    ESB -> ESB: Populate MESSAGE array with new record
+    ESB --> ESB: Update MESSAGE with FILE_ID, PAYLOAD, ORG_MSG, MSGNO, ROLE
+end
+
+alt File is Valid 
+    ESB ->ESB : Process Each Message 
+    ESB -> DB : Insert Data in Database
+else 
+    ESB -> ESB : Throw exception File Validation Failed
+end
+
+alt total_amount in the file >100000000
+    ESB -> DB : Update File Status to FILE_FAILED
+    ESB -> ESB : Total Amount is Greater than or equal to 100000000
+end
+
+@enduml
+
+
+
+

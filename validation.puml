@@ -1,0 +1,172 @@
+@startuml
+
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+Database "Extenal DB" as FN
+
+DB -> MQ : DB Trigger puts the Message in the MQ (PAYHUB.MKCH.VALIDATION.IN)
+MQ -> ESB : Validates the mandatory fields are present or not
+
+alt missingMandatoryFieldsChr <>  ''
+    ESB -> ESB : Throw Exception "Mandatory fields are not present"
+end
+
+
+alt LogReq = 'Y'
+    ESB -> MQ: send message to EAI.MSGLOG.MGT.IN queue
+else
+    ESB -> ESB: No Action
+end
+
+ESB -> DB : Fetch XML payload from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch STS_LKP_CD from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+
+ESB -> ESB : Convert the Data into BLOB format
+
+alt UPDT_MSG_BLOB is NULL
+    ESB -> ESB : Throw Exception "Status of Message is Invalid"
+end
+
+ESB -> ESB : Convert the Data into XMLNSC format
+
+alt STS_LKP_CODE = 'CK_VERIFIED'
+    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new XML payload
+    DB --> ESB : returns update status
+    alt SQLCODE <> 0 
+        ESB -> ESB : Throw Exception "Failed to update IFSC code to database"
+    end
+end
+
+ESB -> DB : Fetch FILE_NAME, ESCROW_PAY_ID, BTRN_DATE, and SENDER_ID from INWARD_FILES and INWARD_TRN tables with matching TRANSACTION_ID.
+DB --> ESB : Store returned data in GET_UNIQUE_REF_NO[]
+
+ESB -> DB : Fetch ESCROW_SOL_ID, ESCROW_PARTY_CODE, and TYPE_LKP_ID from the SENDER_MASTER matching SENDER_ID
+DB --> ESB : Store returned data in SOL_ID_AND_PARTY_CODE[]
+
+alt TYPE_LKP_ID = 101
+    ESB -> FN : fetches BATCH_DATE and AMOUNT from the sibescrowmaster
+    FN --> ESB : Store returned data in GET_BATCH_DATE[]
+end
+
+ESB -> FN : Insert SOL_ID, PARTY_CODE, BATCH_DATE, BENEFICIARY_AC_NO, IFSC, EMAIL_ID, MOBILE_NO in sibescrowchild table
+FN --> ESB : return insertion status 
+
+alt SQLCODE <> 0
+    ESB -> ESB : Error : 'Insertion Failed'
+end
+
+alt length of AccNo >16 and TRN_TYPE = 'S'
+    ESB -> DB : Update STATUS_LKP_ID TO (LKP_CODE = 'TRN_REJECTED') && ERR = 'Account No. is Greater than 16 digits'
+    ESB -> ESB : Throw Exception "Transaction failed due to invalid AccNo"
+end
+
+ESB -> FN : Check SW59_ACCOUNT_CODE exist in CBS_ACC_MAPPER table
+    alt Account Exist || Account Not Exist
+        ESB -> ESB : Go to validation
+    else Account Not Exist && Transaction Type = 'S'
+        ESB -> DB : Fetch VAN URL From PARAMETER_MASTER table
+        DB --> ESB : Returns VAN URL
+        ESB -> FN : Create VAN Request  `check what to do here
+        FN --> ESB : Returns Response
+
+        alt VAN_EXIST = 'Y' 
+            ESB -> DB : Update VAN_ACC_NO In INWARD_TRN Tables
+    end
+
+ESB -> DB : Fetch BALANCE_LIMIT from SENDER_MASTER table
+DB --> ESB : Returns BALANCE_LIMIT
+
+alt  Transaction Amount > BALANCE_LIMIT
+    ESB -> ESB : Throw exception "transaction amount is grater than balance limit"
+end
+
+ESB -> DB : Fetch SDMC FLAG from SENDER_MASTER table
+DB --> ESB : Returns SDMC FLAG from SENDER_MASTER
+
+ESB -> DB : Fetch Data From CBS_ACC_MAPPER Table
+DB --> ESB : Returns data from CB_ACC_MAPPER
+
+ESB -> DB : Fetch HOST From EXCHANGE_HOUSE_MASTER and SENDER_MASTER Table from Transaction Id
+DB --> ESB : Returns HOST from CB_ACC_MAPPER
+
+ESB -> DB : Fetch Data from INWARD_TRN and SENDER_MASTER Table using Transaction Id
+    alt lenght Data > 0
+        ESB -> FN : Fetch BENEFICIARY_NAME, MASTER_STATUS, AMOUNT from sibescrowmaster table 
+        FN --> FN : Returns data
+    end
+
+alt Transaction_Type = 'D'  
+
+    ESB -> DB : Fetch PURPOSECD_CHECK_YN, COUNTRYCD_CHECK_YN , PURPOSE_CD AND LOOK_UP_CD from SENDER_MASTER , PURPOSE_MASTER AND LOOKUP TABLES
+    alt PURPOSECD_CHECK_YN = 'Y' && COUNTRYCD_CHECK_YN = 'N'
+        alt PURPOSE_CD is '' or NULL
+            ESB -> ESB : Call UpdataStautusLookUpId ( "Invalid Purpose Code" )
+        end
+    end
+    alt PURPOSECD_CHECK_YN = 'N' && COUNTRYCD_CHECK_YN = 'Y'
+        alt LOOK_UP_CD is '' or NULL
+            ESB -> ESB : Call UpdataStautusLookUpId ( "Invalid Purpose Code" )
+        end
+    end
+    alt PURPOSECD_CHECK_YN = 'Y' && COUNTRYCD_CHECK_YN = 'Y'
+        alt (LOOK_UP_CD is '' or NULL) OR (PURPOSE_CD is '' or NULL)
+            ESB -> ESB : Call UpdataStautusLookUpId ( "Invalid Purpose Code" )
+        end
+    end    
+    else if Beneficiary_AccNo is '99999999999999'
+        ESB -> DB: Update status to 'DD_DOWNLOADED'
+    else
+        ESB -> ESB: Route to 'DD_GENERATE'
+    end
+end
+
+alt Transaction_Type = 'N'
+    ESB -> DB: Fetch PURPOSECD_CHECK_YN, COUNTRYCD_CHECK_YN, PURPOSE_CD, LOOK_UP_CD from SENDER_MASTER, PURPOSE_MASTER, and LOOKUP tables
+    
+    alt PURPOSECD_CHECK_YN = 'Y' && COUNTRYCD_CHECK_YN = 'N'
+        alt PURPOSE_CD is '' or NULL
+            ESB -> ESB: Route to 'SEND_TO_MKCH'
+            ESB -> ESB: Call UpdateStatusLookupId("Invalid Purpose Code")
+        end
+    end
+
+    alt PURPOSECD_CHECK_YN = 'N' && COUNTRYCD_CHECK_YN = 'Y'
+        alt LOOK_UP_CD is '' or NULL
+            ESB -> ESB: Route to 'SEND_TO_MKCH'
+            ESB -> ESB: Call UpdateStatusLookupId("Invalid Country Code")
+       end
+    end
+
+    alt PURPOSECD_CHECK_YN = 'Y' && COUNTRYCD_CHECK_YN = 'Y'
+        alt (LOOK_UP_CD is '' or NULL) || (PURPOSE_CD is '' or NULL)
+            ESB -> ESB: Route to 'SEND_TO_MKCH'
+            ESB -> ESB: Call UpdateStatusLookupId("Invalid Purpose or Country Code") 
+        end
+    end
+    alt ACTIVE_YN = 'N'
+        ESB -> ESB: Route to 'SEND_TO_MKCH'
+        ESB -> DB: Update status to 'IFSC INACTIVE'
+    else ACTIVE_YN = 'Y'
+        ESB -> ESB: Route to 'PROCEED_FOR_C24'
+        ESB -> DB: Update status to 'C24 SCHEDULED'
+    end
+end
+
+
+
+
+
+
+
+
+
+
+@enduml
