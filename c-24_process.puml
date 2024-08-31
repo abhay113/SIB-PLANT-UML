@@ -39,17 +39,196 @@ alt STS_LKP_CODE = 'CK_VERIFIED'
 end
 
 alt TRANSACTION_TYPE = 'T'
-' --code here
-else 
+    alt HOST = 'CORP'
+        note right: Do nothing
+    else HOST != 'CORP'
+    
+        ESB -> DB: SELECT LAST_ERR_CD, LAST_ERR_TXT FROM INWARD_TRN WHERE INWTRNID = INWTRNID
+        DB --> ESB: Return LAST_ERR_CD, LAST_ERR_TXT
+
+        alt LAST_ERR_CD = 'FCRA001' AND LAST_ERR_TXT = 'FCRA Restricted Foreign Donors'
+            note right: Do nothing
+        else
+            loop for each Address in Remitter_Address[]
+            ESB -> DB: CALL CHECK_DONOR
+            DB --> ESB: Return DONOR_MSG
+            alt DONOR_MSG = 'Success'
+                ESB -> ESB: Increment senderAddrCount
+            end
+        end
+    
+    end
+
+    
+    ESB -> ESB: if DONOR_MSG = 'Success' Then THROW EXCEPTION (ISO0070001: FCRA Restricted Foreign Donors)
+    
+    ESB -> DB: SELECT SEQ_STAN_ID.NEXTVAL as STANID FROM DUAL
+    DB --> ESB: Return STANID
+    
+    ESB -> ESB: if STANID is not valid THROW USER EXCEPTION (ISO0001101: Failed to Generate STANID)
+    end
+
+    ESB -> DB: SELECT BANK_CHARGES, BANK_STAX, SELF_OTHER_FLAG, BTRN_DATE FROM INWARD_TRN WHERE INWTRNID = INWTRNID
+    DB --> ESB: Return BANK_CHARGES, BANK_STAX, SELF_OTHER_FLAG, BTRN_DATE
+
+    ESB -> DB: SELECT SELF_OTHER_FLAG FROM INWARD_TRN TABLE
+    DB --> ESB: Return SELF_OTHER_FLAG
+    alt SELF_OTHER_FLAG = 'T'
+        ESB -> DB: SELECT SUSPENSE_ACCNUM FROM DUAL
+        DB --> ESB: Return SUSPENSE_ACCNUM
+    
+        alt Suspense Account is valid
+            ESB -> ESB: Set Settlement and Beneficiary Account
+        else
+            ESB -> ESB: THROW USER EXCEPTION (ISO0061303: Invalid Suspense Acc Number)
+        end
+    else
+        ESB -> ESB: THROW USER EXCEPTION (ISO0001203: Invalid Flag for SELF/Other Bank Transaction)
+    end
+
+    ESB -> DB: SELECT FINACLE_ACC_NO FROM SENDER_MASTER TABLE
+    DB --> ESB: Return FINACLE_ACC_NO
+
+    alt Vostro Account Found
+        ESB -> ESB: Set AccountIdentification1
+    else
+        ESB -> ESB: THROW USER EXCEPTION (ISO0001401: Failed to Get Vostro Account Number)
+    end
+
+
+else TransactionType !='T'
     ESB -> DB : Fetch GET_LKPCD(HOST_TYPE_LKP_ID) as HOST from EXCHANGE_HOUSE_MASTER and SENDER_MASTER 
     DB --> ESB : Returns Data
     ESB -> DB : Fetch LAST_ERR_CODE AND LAST_ERR_TEXT from INWARD_TXN
     DB --> ESB : Returns Data
 
+    alt HOST = 'CORP'
+        note right: Do nothing
+    else HOST != 'CORP'    
 
-    alt LAST_ERR_CD = 'FCRA001' and LAST_ERR_TXT = 'FCRA Restricted Foreign Donors'
+    alt LAST_ERR_CD = 'FCRA001' & LAST_ERR_TXT = 'FCRA Restricted Foreign Donors'
+        note right: Do nothing
+    else
+        alt  TRANSACTION_TYPE = 'I'
+            ESB -> DB: SELECT DONOR_NAME FROM imps_restricted_donors
+            DB --> ESB: returns DONOR_NAME
+        else 
+            ESB -> DB: SELECT DONOR_NAME FROM neft_restricted_donors
+            DB --> ESB: returns DONOR_NAME
+        end
+        loop for each Address in Remitter_Address[]
+            ESB -> DB: CALL CHECK_DONOR
+            DB --> ESB: Return DONOR_MSG
+        end 
+        
+        ESB -> ESB: if DONOR_MSG = 'Success' Then THROW EXCEPTION (ISO0070001: FCRA Restricted Foreign Donors)
+    end 
+
+    ESB -> DB: SELECT SEQ_STAN_ID.NEXTVAL as STANID FROM DUAL
+    DB --> ESB: STANID result
+   
+    ESB -> ESB: If STANID result not found THROW USER EXCEPTION ('ISO_PARSING_FAILED', 'ISO0001101', 'Failed to Generate STANID )
+
+    ESB -> DB: SELECT VAN_TXN_YN FROM INWARD_TRN TABLE
+    DB --> ESB: VAN_TXN_YN result
+
+    alt If VAN_TXN_YN result found
+
+        alt If VAN_TXN_YN = 'Y'
+            ESB -> DB: SELECT VAN_ACC_NO AS BENEFICIARY_ACC, BANK_CHARGES, BANK_STAX, SELF_OTHER_FLAG, BTRN_DATE, CBS_REF_VALUE1, RTGS_NEFT_TRN_ID FROM INWARD_TRN Table
+        else
+            ESB -> DB: SELECT BENEFICIARY_ACC, BANK_CHARGES, BANK_STAX, SELF_OTHER_FLAG, BTRN_DATE, CBS_REF_VALUE1, RTGS_NEFT_TRN_ID FROM INWARD_TRN table
+        end
+        DB --> ESB: return INWARD_TRN data
+    else
+
+        ESB -> ESB: THROW USER EXCEPTION ('ISO_PARSING_FAILED', 'ISO0001201', 'Failed to Get Beneficiary Account Number )
+    end
+
+    alt If CBS_REF_VALUE1 = '1420'
+        ESB -> ESB: (If SELF_OTHER_FLAG != 'N' OR Transaction_Type != 'I')  THROW USER EXCEPTION ('ISO_PARSING_FAILED', 'ISO001261', 'Invalid state of transaction.')
+    end
+
+    ESB -> DB: SELECT SELF_OTHER_FLAG FROM INWARD_TRN 
+    DB --> ESB: return SELF_OTHER_FLAG
+
+    alt SELF_OTHER_FLG = 'S'
+        ESB -> DB: SELECT FINACLE_ACC_NO, ACC_NAME, SCH_TYPE, IS_LOAN, IS_INSTI FROM CBS_ACC_MAPPER WHERE FINACLE_ACC_NO = Environment.INWTRN_DTL.BENEFICIARY_ACC
+        DB --> ESB : return Data
+
+        ESB -> ESB: if data not found THROW ISO_PARSING_FAILED (Account details not found)
+
+    else SELF_OTHER_FLG = 'I'
+            ESB -> DB: SELECT GET_PARAM_VALUE('IMPS','SETTLMENT_AC') AS IMPSACCNUMBER FROM DUAL
+            DB --> ESB: return IMPSACCNUMBER
+            
+            ESB -> ESB: if IMPSACCNUMBER not found then THROW ISO_PARSING_FAILED (Invalid IMPS Settlement Acc Number)
+    
+    else SELF_OTHER_FLG = 'N' OR SELF_OTHER_FLG = 'R'
+        ESB -> DB: CALL Check_SFMSPI_Window(INWTRNID, GATEWAY, RTN_WINDOW_STATUS)
+        DB --> ESB : Method invoked
+        alt RTN_WINDOW_STATUS = 'FAIL'
+            ESB -> ESB: THROW ISO_PARSING_FAILED (GATEWAY working window not available)
+        end
+        ESB -> ESB: CALL GET_SETTLMENT_AC(INWTRNID, TRNTYPE, SETTLEMENT_AC)
+        DB --> ESB : Method invoked
+    else 
+        ESB -> ESB: THROW ISO_PARSING_FAILED (Invalid Flag for SELF/Other Bank Transaction)
+    end    
+    
+
+    ESB -> DB: SELECT SDMC_FLAG FROM SENDER_MASTER based on SENDER_CD
+    DB --> ESB: return SDMC_FLAG
+    ESB -> DB: SELECT INWTRN.FILE_ID, SM.FINACLE_ACC_NO, SM.SENDER_NAME, SM.SENDER_ID FROM SENDER_MASTER and INWARD_TRN
+    DB --> ESB: return Data
+    
+    ESB -> ESB : if Data not found  Throw ISO_PARSING_FAILED (Failed to Get Vostro Account Number)
+    
+    alt SDMC_FLAG = 'Y'
+        ESB -> DB: SELECT GET_PARAM_VALUE('SINGLE_DEBIT','SUSPENSE_AC') AS SUSPENSEACCNUM FROM DUAL
+        DB --> ESB: Return SUSPENSEACCNUM
+
+        ESB -> ESB : if SUSPENSEACCNUM not found THROW ISO_PARSING_FAILED (Invalid SUSPENSE Acc Number)
+    end
+
+    ESB -> ESB: Process Transaction Amount (TRN_AMT)
+    alt CHARGES_AMT > 0
+        ESB -> ESB: Calculate and set BankFee
+    end
+
+    alt HOST = 'CORP'
+        ESB -> ESB: Set PURPOSECD = 'P1301'
+    else
+        ESB -> DB: SELECT PURPOSECD_CHECK_YN FROM SENDER_MASTER JOIN EXCHANGE_HOUSE_MASTER WHERE SENDER_CD=?
+        DB --> ESB: PURPOSE
+        alt PURPOSE = 'Y'
+            ESB -> ESB: Set PURPOSECD from InputRoot
+        else
+            ESB -> ESB: Set PURPOSECD = 'P1301'
+        end
+    end 
+
+    
+    ESB -> ESB: if  Transaction_Type = 'N' then Set Remitter_Name for NEFT
+
+    ESB -> DB: SELECT FILE_NAME FROM INWARD_FILES WHERE FILE_ID=?
+    DB --> ESB: return FILE_NAME
+
+    alt SELF_OTHER_FLG = 'I'
+        ESB -> ESB: Process ReservedForPrivateUse125 with 'PHB-IBD'
+    else
+        alt HOST = 'CORP'
+            ESB -> DB: SELECT CBS_REPORT_CD FROM EXCHANGE_HOUSE_MASTER JOIN SENDER_MASTER WHERE SENDER_ID=?
+            DB --> ESB: return CBS_REPORT_CD
+            ESB -> ESB: Process ReservedForPrivateUse125 with REPORT_CD
+        else
+            ESB -> DB: SELECT CBS_REPORT_CD FROM EXCHANGE_HOUSE_MASTER JOIN SENDER_MASTER WHERE SENDER_ID=?
+            DB --> ESB: return CBS_REPORT_CD
+            ESB -> ESB: Process ReservedForPrivateUse125 with REPORT_CD and 'FI'
+        end
+    end
 end
-' --------------------------------------------------- not able to get this
+
 
 ' validation stars here 
 
