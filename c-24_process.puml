@@ -229,7 +229,6 @@ else TransactionType !='T'
     end
 end
 
-
 ' validation stars here 
 
 alt ISO_MSG_TYPE is NULL 
@@ -268,6 +267,60 @@ alt DeliveryChannelControllerId is NULL
 else length of DeliveryChannelControllerId != 3
     ESB -> ESB : Throw Error 'ISO Validation Failed : Delivery Channel Controller ID should be of 3 characters'
 end
+
+ESB -> ESB : map the input fields to XMLNSC format
+
+ESB -> ESB: Convert Input XML to Bitstream
+ESB -> ESB: Set MessageType to 'ISO8583_1987'
+ESB -> ESB: Create DFDL Structure
+ESB -> DB: Remove Unrequired XML Attributes
+ESB -> ESB: Populate Primary Bitmap
+ESB -> ESB: Check if Secondary Bitmap is Required
+alt Secondary Bitmap Required
+    ESB -> ESB: Create and Populate Secondary Bitmap
+    ESB -> ESB: Set PrimaryBitmap.Bit001 to 1
+else No Secondary Bitmap
+    ESB -> ESB: Set PrimaryBitmap.Bit001 to 0
+end
+ESB -> ESB: Update Bitmaps Based on Available Fields
+ESB -> ESB: Convert DFDL Structure to Bitstream
+ESB -> ESB: Return TRUE
+
+' 4th subflow
+
+ESB -> ESB: convert the fields in BLOB format
+ESB -> ESB:if INWTRNID =0 then THROW Exception ('Invalid Inward Transaction ID')
+
+ESB -> DB : SELECT SEQ_INW_PAYLOAD.NEXTVAL as PAYLOAD_SEQ FROM dual
+DB -> ESB : return PAYLOAD_SEQ
+ESB -> ESB: if Payload Sequence Number not generated then  THROW Exception ('Payload Sequence Number cannot be generated')
+
+ESB -> DB: INSERT INTO TRANSACTION_PAYLOAD (PAYLOAD_ID, INW_TRN_ID, PAYLOAD, CREATED_BY, CREATED_ON)
+DB --> ESB: Data inserted
+
+ESB ->ESB : if insertion failed THROW Exception ('SQL Error in INSERT TRANSACTION_PAYLOAD')
+
+ESB -> DB : Select SELF_OTHER_FLAG, CONS_TRN_ID FROM INWARD_TRN WHERE INW_TRN_ID=?
+DB --> ESB : return data
+
+
+alt SDMC_FLAG = 'Y' and SELF_OTHER_FLAG <> 'T'
+    ESB -> DB : SELECT CBS_REF_VALUE5 FROM INWARD_TRN 
+    DB -> ESB : return CBS_REF_VALUE5
+end
+
+alt OtherBank_Return
+    ESB -> DB: Update INWARD_TRN with C24_SEND status, ISO_PAYLOAD_ID, MsgType, and StanID
+    DB --> ESB: Return update confirmation
+else 
+    ESB -> DB: Update INWARD_TRN with C24_SEND status, MsgType, StanID, LocalTransDT, PrimAccNo, AccIdent1, AccIdent2, and ISO_PAYLOAD_ID
+    DB --> ESB: Return update confirmation
+end
+
+ESB -> ESB : if update failed throw Exception 'Failed to update the status of the Message'
+
+
+
 
 
 
