@@ -28,7 +28,6 @@ DB --> ESB : Returns data
 ESB -> DB : Fetch STS_LKP_CD from INWARD_TRN table based on TRANSACTION_ID
 DB --> ESB : Returns data
 
-
 ESB -> ESB : Convert the Data into BLOB format
 
 alt UPDT_MSG_BLOB is NULL
@@ -38,7 +37,7 @@ end
 ESB -> ESB : Convert the Data into XMLNSC format
 
 alt STS_LKP_CODE = 'CK_VERIFIED'
-    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new XML payload
+    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new payload
     DB --> ESB : returns update status
     alt SQLCODE <> 0 
         ESB -> ESB : Throw Exception "Failed to update IFSC code to database"
