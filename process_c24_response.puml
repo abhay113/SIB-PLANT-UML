@@ -1,0 +1,117 @@
+@startuml
+
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+Database "Extenal DB" as FN
+
+DB -> MQ : DB Trigger puts the Message in the MQ (PAYHUB.MKCH.VALIDATION.IN)
+MQ -> ESB : Validates the mandatory fields are present or not
+
+alt missingMandatoryFieldsChr <>  ''
+    ESB -> ESB : Throw Exception "Mandatory fields are not present"
+end
+
+
+alt LogReq = 'Y'
+    ESB -> MQ: send message to EAI.MSGLOG.MGT.IN queue
+else
+    ESB -> ESB: No Action
+end
+
+ESB -> DB : Fetch XML payload from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch STS_LKP_CD from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> ESB : Convert the Data into BLOB format
+
+alt UPDT_MSG_BLOB is NULL
+    ESB -> ESB : Throw Exception "Status of Message is Invalid"
+end
+
+ESB -> ESB : Convert the Data into XMLNSC format
+
+alt STS_LKP_CODE = 'CK_VERIFIED'
+    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new payload
+    DB --> ESB : returns update status
+    alt SQLCODE <> 0 
+        ESB -> ESB : Throw Exception "Failed to update IFSC code to database"
+    end
+end
+'end c24 mq input subflow
+
+' c24 recieve subflow
+
+ESB -> ESB : convert the message in BLOB format
+ESB -> ESB : add delimiter  
+ESB -> ESB : convert the message in DFDL format
+ESB -> ESB : convert the message in XMLNSC format
+
+ESB -> DB: SELECT INW_TRN_ID FROM INWARD_TRN WHERE CBS_REF_VALUE2 = STANID
+DB --> ESB: Return INW_TRN_ID
+
+ESB -> DB: SELECT SEQ_INW_PAYLOAD.NEXTVAL FROM DUAL
+DB --> ESB: Return PAYLOAD_SEQ
+ESB -> ESB: Assign PAYLOAD_SEQ to ISO_PAYLOAD_ID
+
+ESB -> DB: INSERT Data INTO TRANSACTION_PAYLOAD
+DB --> ESB: Data inserted
+
+
+ESB -> DB: SELECT INW_TRN_ID, IFSC_CODE, LAST_ERR_CD, LAST_ERR_TXT \nFROM INWARD_TRN WHERE CBS_REF_VALUE2 = v_C24_STAN_ID
+DB --> ESB: Returns INW_TRN_ID, IFSC_CODE, etc.
+
+alt INW_TRN_ID found
+    ESB -> DB: SELECT CBS_REPORT_CD FROM INWARD_TRN \nJOIN SENDER_MASTER, EXCHANGE_HOUSE_MASTER \nWHERE INW_TRN_ID = INWTRNID
+    DB --> ESB: Returns CBS_REPORT_CD
+
+    alt CBS_REPORT_CD = 'PHB-IBD' and IFSC_CD = 'SBIN0000691'
+        ESB -> DB: UPDATE INWARD_TRN SET STATUS_LKP_ID = GET_LKPID('C24_MAN_REPOST')
+        ESB -> DB: UPDATE INWARD_TRN SET LAST_ERR_CD = ERROR_CODE,\n LAST_ERR_TXT = Environment.ErrorText.RTNCD_TEXT
+        ESB -> ESB: THROW USER EXCEPTION ('ISO_PARSING_FAILED', 'EHIFSC', Environment.ErrorText.RTNCD_TEXT)
+    end
+    ESB -> DB: SELECT GET_LKPCD(Status_Lkp_id) AS STATUSLKP \nFROM TRANSACTION_STATUS_AT \nWHERE INW_TRN_ID = INWTRNID AND STATUS_LKP_ID IN (...)
+    DB --> ESB: Returns STATUSLKP
+
+    alt STATUSLKP found
+        ESB -> DB: SELECT SENDER_CD, IMPS_TO_NEFT_YN \nFROM SENDER_MASTER WHERE SENDER_ID = (SELECT SENDER_ID FROM INWARD_TRN WHERE INW_TRN_ID = INWTRNID)
+        DB --> ESB: Returns SENDER_CD, IMPS_TO_NEFT_YN
+
+        ESB -> DB: SELECT PARAM_VALUE FROM PARAMETER_MASTER WHERE PARAM_NAME = 'IMPS_ROUTE_NEFT'
+        DB --> ESB: Returns PARAM_VALUE
+
+        alt IMPS to NEFT
+            ESB -> DB: CALL CHECK_NEFT_WINDOW(INW_TRN_ID, 'NEFT', RTN_WINDOW_STATUS)
+            DB --> ESB: Returns RTN_WINDOW_STATUS
+
+            alt NEFT Window is Working
+                ESB -> DB: PROPAGATE to Terminal 'out1'
+            else NEFT Window Not Working
+                ESB -> ESB: SET Environment.ALLOW_MAN_REPOST = 'Yes'
+            end
+        end
+    end
+
+else INW_TRN_ID not found
+    ESB -> ESB: THROW USER EXCEPTION ('C24 Recieve Failed', 'ISO0002111', 'Failed to get Transaction ID for the received STAN ID: ' || v_C24_STAN_ID)
+end
+
+ESB -> DB: SELECT RTNCD_TEXT, RTNCD_DESC, ACTION_CD \nFROM RETURN_CODE_MASTER WHERE RTNCD_CODE = v_C24_RETURN_CODE
+DB --> ESB: Returns ACTION_CD
+
+alt ACTION_CD = 'C24-SUCCESS'
+    alt C24Reversed = TRUE
+        ESB -> ESB: SET v_C24_STATUS based on C24ReverseReason
+    else C24Reversed = FALSE
+        ESB -> ESB: SET v_C24_STATUS = 'C24_SUCCESS'
+    end
+else ACTION_CD not 'C24-SUCCESS'
+    ESB -> ESB: Handle other action codes
+end
+
+@enduml

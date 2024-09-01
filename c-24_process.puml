@@ -1,4 +1,4 @@
-@startuml
+@startuml C24 PROCESS
 
 participant ESB
 Database "DB" as DB
