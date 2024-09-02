@@ -1,4 +1,81 @@
 @startuml
 
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+Database "Extenal DB" as FN
+
+MQ -> ESB : Message recieved from (NEFT.HUB/HUB.INCOMING) queue
+
+ESB -> MQ : Message send to BKP.HUB.INCOMING queue
+MQ --> ESB : Message recieved
+
+ESB -> ESB : Convert the mesafe into BLOB format
+
+ESB -> DB : select PAYLOAD_SEQ from DUAL 
+DB --> ESB : return PAYLOAD_SEQ
+
+ESB -> ESB : if data not recieved THROW EXCEPTION (Payload Sequence Number cannot be generated)
+
+ESB -> DB : Insert (PAYLOAD_ID, INW_TRN_ID, PAYLOAD, CREATED_BY, CREATED_ON) into TRANSACTION_PAYLOAD 
+DB --> ESB : Data inserted
+
+alt NEFT_MsgType = 'F01'
+    ESB -> ESB : get the message in BLOB format and convert it into MRM
+    ESB -> ESB : select INW_TRN_ID from INW_TRN table
+    alt INW_TRN_ID 
+        ESB -> DB : select AMOUNT, INW_TRN_ID,FINACLE_ACC_NO from SENDER_MASTER and INW_TRN table 
+        DB --> ESB : return data
+        alt FINACLE_ACC_NO same as Input    
+            alt AMOUNT same as Input
+                ESB -> DB : update INWARD_TRN set STATUS_LKP_ID = 'NEFT_RETURN'
+
+            end
+        end
+    end
+else
+    alt NEFT_MsgType != 'F27'
+        ESB -> ESB : convert fields into MRM format  (AS A RESPONSE MESSAGE)
+    else 
+        ESB -> ESB : convert fields into MRM format  (AS A AKNOWLEDGEMENT MESSAGE)
+    end
+end
+
+ESB -> ESB : if BankAppID != 'HUB' THROW EXCEPTION (Invalid NEFT Response)
+alt v_MsgID ='F20'
+    ESB -> ESB : v_Status_CD='NEFT_ACK'
+else v_MsgID ='F22'
+    ESB -> ESB :  v_Status_CD = 'NEFT_NONACK';
+else v_MsgID ='F23'
+    ESB -> DB : select data from inward_trn base on RTGS_NEFT_TRN_ID
+    DB --> ESB : return data
+    ESB -> ESB :  v_Status_CD = 'NEFT_DEL_NOTI';
+else v_MsgID = 'F24'
+    ESB -> ESB :  v_Status_CD = 'NEFT_OPEN_NOTI';
+else v_MsgID = 'F25'
+    ESB -> ESB :  v_Status_CD = 'NEFT_NEG_ACK';
+else v_MsgID = 'F26'
+    ESB -> ESB :  v_Status_CD = 'NEFT_UNEG_ACK';
+else v_MsgID = 'F27'
+    ESB -> DB : select RTNCD_TEXT,RTNCD_DESC,ACTION_CD from RETURN_CODE_MASTER table
+    DB --> ESB : return data
+    alt ACTION_CD = 'NEFT_SUCCESS'
+        ESB -> ESB : v_Status_CD = 'NEFT_SENDSUCC'
+    alt ACTION_CD = 'NEFT_MANUAL'
+        ESB -> ESB : v_Status_CD = 'NEFT_SENDFAIL'
+    end
+else v_Status_CD = 'NEFT_RESPONSE'
+end
+ESB -> DB : update INWARD_TRN set STATUS_LKP_ID =v_Status_CD based on RTGS_NEFT_TRN_ID
+DB --> ESB : table updated
+
+ESB -> ESB : if update failed THROW ERROR (Failed to update the status of the Message)
+
+
+            
+
+
+
+
 
 @enduml
