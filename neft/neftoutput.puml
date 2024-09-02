@@ -1,3 +1,26 @@
 @startuml NEFT OUTPUT 
 
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+Database "Extenal DB" as FN
+
+MQ-> ESB :  Message in the MQ (CBS.NEFT & HUB.NEFT) is recieved
+
+ESB -> ESB : If mandatory fields are missing Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: If LogReq = "Y" send message to EAI.MSGLOG.MGT.IN queue
+MQ --> ESB: message inserted
+
+ESB -> DB: select SIGN_PASS,KEY_PASS,ALIAS,CERT_PATH,KEYSTORE_INST,ALGO_NAME from DUAL
+DB --> ESB : returned data
+
+ESB -> ESB : call SIGNBLOCK4A(BLOCK_4_STR,KEYPASS,CERTPASS,CERTPATH,ALIAS,KEYSTOREINST,ALGONAME)
+
+ESB -> DB : update INWARD_TRN set STATUS_LKP_ID =' NEFT_SIGNED' 
+DB --> ESB : Status updated 
+
+ESB -> MQ : send message to BKP.CBS.NEFT and SFMS.INCOMING queues
+MQ --> ESB: message recieved
+
 @enduml

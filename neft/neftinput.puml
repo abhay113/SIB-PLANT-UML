@@ -5,4 +5,34 @@ Database "DB" as DB
 Queue "MQ" as MQ
 Database "Extenal DB" as FN
 
-@enduml
+MQ-> ESB :  Message in the MQ (CBS.INCOMING) is recieved
+
+ESB -> ESB : If mandatory fields are missing Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: If LogReq = "Y" send message to EAI.MSGLOG.MGT.IN queue
+MQ --> ESB: message inserted
+
+ESB -> MQ : Message send to BKP.NEFT.CBS queue
+MQ -> ESB : Message recieved
+
+alt IS_RTGS 
+    ESB -> MQ : send message to BKP.NEFT.CBS.298R queue
+    MQ --> ESB : message recieved 
+else
+    ESB -> MQ : send message to NEFT.CBS.OTHER queue
+    MQ --> ESB : message recieved 
+
+    alt INW_CHAR contains 'I972'
+        ESB -> ESB : convert the message into (NEFTI972)
+        ESB -> DB : insert VALUE_DATE,SEQ_NO,PAYLOAD,CREATED_BY,CREATED_ON into NEFT_WINDOW
+        DB --> ESB : insert done
+        
+        ESB -> MQ : send message to BKP.IFN972 queue
+        MQ --> ESB : message recieved 
+
+    else
+        ESB-> MQ : send message to NEFT.HUB queue  
+        MQ --> ESB : message recieved
+    end
+end
+@enduml 

@@ -90,9 +90,9 @@ DB --> ESB :  return data
 ESB -> ESB : if failed to retrive data throw SQL EXCEPTION
 
 ESB -> FN : update sibescrowchild table set UTR = NEFT_UTR_NO_FINAL;
-FN --> ESB : updated table
+FN --> ESB : table updated 
 
 ESB -> DB : update INWARD_TRN set RTGS_NEFT_SEND_PAYLOAD_ID,RTGS_NEFT_TRN_ID,STATUS_LKP_ID
-DB --> ESB : updated table
+DB --> ESB : table updated 
 
 @enduml
