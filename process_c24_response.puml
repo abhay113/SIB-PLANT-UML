@@ -52,66 +52,128 @@ ESB -> ESB : add delimiter
 ESB -> ESB : convert the message in DFDL format
 ESB -> ESB : convert the message in XMLNSC format
 
-ESB -> DB: SELECT INW_TRN_ID FROM INWARD_TRN WHERE CBS_REF_VALUE2 = STANID
-DB --> ESB: Return INW_TRN_ID
 
-ESB -> DB: SELECT SEQ_INW_PAYLOAD.NEXTVAL FROM DUAL
-DB --> ESB: Return PAYLOAD_SEQ
-ESB -> ESB: Assign PAYLOAD_SEQ to ISO_PAYLOAD_ID
+ESB -> DB: SELECT INW_TRN_ID, IFSC_CODE, LAST_ERR_CD FROM INWARD_TRN WHERE CBS_REF_VALUE2 = v_C24_STAN_ID
+DB --> ESB: return INWTRNID, IFSC_CD
 
-ESB -> DB: INSERT Data INTO TRANSACTION_PAYLOAD
-DB --> ESB: Data inserted
+alt INWTRNID exists
+    ESB -> DB: SELECT CBS_REPORT_CD FROM SENDER_MASTER based on INWRD_TRN_ID
+    DB --> ESB: return CBS_REPORT_CD
 
+    alt CBS_REPORT_CD = 'PHB-IBD' AND IFSC_CD = 'SBIN0000691'
+        ESB -> DB: UPDATE INWARD_TRN SET STATUS_LKP_ID = 'C24_MAN_REPOST'
+        DB --> ESB: Return RTNCD_TEXT
+        ESB -> DB: SELECT RTNCD_TEXT FROM RETURN_CODE_MASTER WHERE RTNCD_CODE = 'EHIFSC'
+        DB --> ESB: Return RTNCD_TEXT
 
-ESB -> DB: SELECT INW_TRN_ID, IFSC_CODE, LAST_ERR_CD, LAST_ERR_TXT \nFROM INWARD_TRN WHERE CBS_REF_VALUE2 = v_C24_STAN_ID
-DB --> ESB: Returns INW_TRN_ID, IFSC_CODE, etc.
-
-alt INW_TRN_ID found
-    ESB -> DB: SELECT CBS_REPORT_CD FROM INWARD_TRN \nJOIN SENDER_MASTER, EXCHANGE_HOUSE_MASTER \nWHERE INW_TRN_ID = INWTRNID
-    DB --> ESB: Returns CBS_REPORT_CD
-
-    alt CBS_REPORT_CD = 'PHB-IBD' and IFSC_CD = 'SBIN0000691'
-        ESB -> DB: UPDATE INWARD_TRN SET STATUS_LKP_ID = GET_LKPID('C24_MAN_REPOST')
-        ESB -> DB: UPDATE INWARD_TRN SET LAST_ERR_CD = ERROR_CODE,\n LAST_ERR_TXT = Environment.ErrorText.RTNCD_TEXT
-        ESB -> ESB: THROW USER EXCEPTION ('ISO_PARSING_FAILED', 'EHIFSC', Environment.ErrorText.RTNCD_TEXT)
+        ESB -> DB: UPDATE INWARD_TRN SET LAST_ERR_CD = 'EHIFSC', LAST_ERR_TXT = RTNCD_TEXT WHERE INW_TRN_ID = INWTRNID
+        ESB -> ESB: THROW USER EXCEPTION 'ISO_PARSING_FAILED'
     end
-    ESB -> DB: SELECT GET_LKPCD(Status_Lkp_id) AS STATUSLKP \nFROM TRANSACTION_STATUS_AT \nWHERE INW_TRN_ID = INWTRNID AND STATUS_LKP_ID IN (...)
-    DB --> ESB: Returns STATUSLKP
-
-    alt STATUSLKP found
-        ESB -> DB: SELECT SENDER_CD, IMPS_TO_NEFT_YN \nFROM SENDER_MASTER WHERE SENDER_ID = (SELECT SENDER_ID FROM INWARD_TRN WHERE INW_TRN_ID = INWTRNID)
-        DB --> ESB: Returns SENDER_CD, IMPS_TO_NEFT_YN
-
-        ESB -> DB: SELECT PARAM_VALUE FROM PARAMETER_MASTER WHERE PARAM_NAME = 'IMPS_ROUTE_NEFT'
-        DB --> ESB: Returns PARAM_VALUE
-
-        alt IMPS to NEFT
-            ESB -> DB: CALL CHECK_NEFT_WINDOW(INW_TRN_ID, 'NEFT', RTN_WINDOW_STATUS)
-            DB --> ESB: Returns RTN_WINDOW_STATUS
-
-            alt NEFT Window is Working
-                ESB -> DB: PROPAGATE to Terminal 'out1'
-            else NEFT Window Not Working
-                ESB -> ESB: SET Environment.ALLOW_MAN_REPOST = 'Yes'
-            end
-        end
-    end
-
-else INW_TRN_ID not found
-    ESB -> ESB: THROW USER EXCEPTION ('C24 Recieve Failed', 'ISO0002111', 'Failed to get Transaction ID for the received STAN ID: ' || v_C24_STAN_ID)
+else
+    ESB -> ESB: THROW USER EXCEPTION 'C24 Recieve Failed'
 end
 
-ESB -> DB: SELECT RTNCD_TEXT, RTNCD_DESC, ACTION_CD \nFROM RETURN_CODE_MASTER WHERE RTNCD_CODE = v_C24_RETURN_CODE
-DB --> ESB: Returns ACTION_CD
+ESB -> DB: SELECT STATUSLKP FROM TRANSACTION_STATUS_AT WHERE INW_TRN_ID = INWTRNID AND STATUS_LKP_ID IN ('C24_MANUAL', 'IMPS_RRN_MANUAL', ...)
+DB --> ESB: return STATUSLKP
+
+alt STATUSLKP = 'IMPS_SENDFAIL'
+    ESB -> DB: SELECT SENDER_CD, IMPS_TO_NEFT_YN FROM SENDER_MASTER WHERE INW_TRN_ID = INWTRNID
+    DB --> ESB: return IMPS_TO_NEFT_YN
+
+    ESB -> DB: SELECT PARAM_VALUE FROM PARAMETER_MASTER WHERE PARAM_NAME = 'IMPS_ROUTE_NEFT'
+    DB --> ESB: return PARAM_VALUE
+
+    alt IMPS_TO_NEFT_YN = 'Y' AND CONTAINS(PARAM_VALUE, LAST_ERR_CD)
+        ESB -> ESB: C24Reversed = FALSE, C24ReverseReason = STATUSLKP
+    else
+        ESB -> ESB: C24Reversed = TRUE, C24ReverseReason = STATUSLKP
+    end
+end
+
+ESB -> DB: CALL GET_SETTLMENT_AC(INWTRNID, TRNTYPE, SETTLEMENT_AC)
+DB --> ESB: return SETTLEMENT_AC
+
+alt TRNTYPE = 'I' AND STATUSLKP = 'IMPS_SENDFAIL'
+    ESB -> DB: CALL CHECK_NEFT_WINDOW(INWTRNID, 'NEFT', RTN_WINDOW_STATUS)
+    DB --> ESB: return RTN_WINDOW_STATUS
+
+    alt RTN_WINDOW_STATUS = 'SUCCESS'
+        ESB -> MQ: send message to IMPS_TO_NEFT_Q  queue
+        MQ --> ESB: message inserted
+    else
+        ESB -> ESB: NEFT WINDOW NOT WORKING
+    end
+end
+
+ESB -> DB: SELECT RTNCD_TEXT, ACTION_CD FROM RETURN_CODE_MASTER WHERE RTNCD_CODE = v_C24_RETURN_CODE
+DB --> ESB: return RTNCD_TEXT, ACTION_CD
 
 alt ACTION_CD = 'C24-SUCCESS'
     alt C24Reversed = TRUE
-        ESB -> ESB: SET v_C24_STATUS based on C24ReverseReason
-    else C24Reversed = FALSE
-        ESB -> ESB: SET v_C24_STATUS = 'C24_SUCCESS'
+        ESB -> ESB: SET v_C24_STATUS = 'C24_REVERSED'
+    else
+        ESB -> ESB: SET v_C24_STATUS based on TRNTYPE
     end
-else ACTION_CD not 'C24-SUCCESS'
-    ESB -> ESB: Handle other action codes
 end
 
+ESB -> DB: SELECT GET_LKPCD(HOST_TYPE_LKP_ID) as HOST from EXCHANGE_HOUSE_MASTER
+DB --> ESB: Return LKPCD
+
+ESB -> DB: SELECT GET_LKPCD(TYPE_LKP_ID) from SENDER_MASTER
+DB --> ESB: Return LKPCD
+
+
+alt MSG_TYPE_S
+    ESB -> DB: SELECT GET_LKPCD(STATUS_LKP_ID) AS MSG_STATUS from SENDER_MASTER
+    DB --> ESB: return data
+    ESB -> ESB: if error retriving data THROW USER EXCEPTION
+    
+    ESB -> DB: SELECT ESCROW_SOL_ID, ESCROW_PARTY_CODE 
+    DB --> ESB: return data
+    ESB -> ESB: if error retriving data THROW USER EXCEPTION
+    
+    ESB -> FN : select AMOUNT from sibescrowmaster
+    FN --> ESB : return AMOUNT
+
+    alt v_C24_STATUS ='NEFT_SCHEDULED'
+        ESB -> FN : update sibescrowchild table with new data and Set AMOUNT to final amount and CHILD_STATUS ='T'
+        FN --> ESB : table updated 
+    alt v_C24_STATUS ='NEFT_SCHEDULED'
+        ESB -> FN : update sibescrowchild table with new data and Set AMOUNT to final amount and CHILD_STATUS ='T'
+        FN --> ESB : table updated 
+    else v_C24_STATUS ='NEFT_SENDFAILED'
+        ESB -> FN : update sibescrowchild table with new data and Set AMOUNT to final amount and CHILD_STATUS ='F'
+        FN --> ESB : table updated  
+    else v_C24_STATUS ='C24_FAILED'
+        ESB -> FN : update sibescrowchild table with new data and Set AMOUNT to final amount and CHILD_STATUS ='F'
+        FN --> ESB : table updated 
+    end
+end
+
+alt ALLOW_MAN_REPOST = 'yes'
+    ESB -> DB : Update INWARD_TRN table set LAST_ERR_CD = ''RBI0002'',LAST_ERR_TXT = ''IMPS to NEFT in waiting state due to RBI working not available''
+    DB --> ESB : table Updated
+else 
+    ESB -> DB : Update INWARD_TRN table 
+    DB --> ESB : table Updated
+end
+
+alt v_C24_STATUS ='TOTAL_DEBIT_SUCC'
+    ESB -> DB : Select SENDER_ID from INWARD_FILES
+    DB --> ESB : return Data
+    ESB -> ESB : call UPDATE_SDMC_TRN from database
+end
+
+ESB -> FN : insert data into rapmulti table
+FN --> ESB : data inserted 
+
+ESB -> FN : select UTR_IMPS_REF,FILENAME FROM rapmulti based on FORACID
+FN --> ESB : return data 
+
+
+
+alt SELF_OTHER_FLAG ='T'
+    ESB -> DB : update INWARD_TRN table based on SELF_OTHER_FLAG
+    DB --> ESB : table updated
+end
 @enduml
