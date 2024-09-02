@@ -1,4 +1,4 @@
-@startuml
+@startuml PROCESS C24 RESPONSE
 
 participant ESB
 Database "DB" as DB
@@ -169,8 +169,6 @@ FN --> ESB : data inserted
 
 ESB -> FN : select UTR_IMPS_REF,FILENAME FROM rapmulti based on FORACID
 FN --> ESB : return data 
-
-
 
 alt SELF_OTHER_FLAG ='T'
     ESB -> DB : update INWARD_TRN table based on SELF_OTHER_FLAG
