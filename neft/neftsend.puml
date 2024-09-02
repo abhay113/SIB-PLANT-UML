@@ -1,4 +1,98 @@
-@startuml
+@startuml NEFT SEND
 
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+Database "Extenal DB" as FN
+
+DB -> MQ : DB Trigger puts the Message in the MQ (PAYHUB.C24.SEND.IN)
+MQ --> ESB : Returns the Message
+
+ESB -> ESB : If mandatory fields are missing Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: If LogReq = "Y" send message to EAI.MSGLOG.MGT.IN queue
+MQ --> ESB: message inserted
+
+ESB -> DB : Fetch XML payload from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch STS_LKP_CD from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> ESB : Convert the Data into BLOB format
+
+alt UPDT_MSG_BLOB is NULL
+    ESB -> ESB : Throw Exception "Status of Message is Invalid"
+end
+
+ESB -> ESB : Convert the Data into XMLNSC format
+
+alt STS_LKP_CODE = 'CK_VERIFIED'
+    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new XML payload
+    DB --> ESB : returns update status
+    alt SQLCODE <> 0 
+        ESB -> ESB : Throw Exception "Failed to update IFSC code to database"
+    end
+end
+'2 subflows'
+
+
+
+ESB -> DB : Select CBSREF from INWARD_TRN
+DB --> ESB : return data
+
+ESB -> DB : Select SENDER_NAME , RMTRNAME_FLAG ,  SNDR_IFSC, PRI_EMAIL_ID FROM SENDER_MASTER 
+DB --> ESB : return data
+
+ESB -> DB : select HOST from EXCHANGE_HOUSE_MASTER
+DB --> ESB : return HOST
+
+ESB -> DB : select SEND_IFSC,REC_IFSC,SERVICE_ID from DUAL
+DB --> ESB : return data
+
+ESB -> DB : select SEQ_NUMBER from DUAL
+DB --> ESB : return SEQ_NUMBER
+
+ESB -> DB : select NEFTBODY_SW2020 from DUAL
+DB --> ESB : return SEQ_NUMBER
+
+ESB -> DB : select ACTIVE_FLAG from DUAL
+DB --> ESB : return ACTIVE_FLAG
+
+ESB -> ESB : map the fields to NEFT format
+ESB -> MQ : Send message to HUB.NEFT queue
+MQ --> ESB : Message recieved
+
+ESB -> DB : select LOOKUP_ID from DUAL
+DB --> ESB : return LOOKUP_ID
+
+ESB -> DB : select SEQ_INW_PAYLOAD from DUAL
+DB --> ESB : return SEQ_INW_PAYLOAD
+
+
+ESB -> DB : insert PAYLOAD_ID,INW_TRN_ID, PAYLOAD, CREATED_BY, CREATED_ON into TRANSACTION_PAYLOAD
+DB --> ESB : data inserted
+
+ESB -> DB : select TYPE_LKP_ID from INWARD_TRN based on INWARD_TRN_ID
+DB --> ESB :  return data
+
+ESB -> DB : select data from INWARD_TRN based on INWARD_TRN_ID
+DB --> ESB :  return data
+ESB -> ESB : if failed to retrive data throw SQL EXCEPTION
+
+ESB -> ESB : CALL GET_UTR_NO
+
+ESB -> DB : SELECT ESCROW_SOL_ID,ESCROW_PARTY_CODE,BTRN_DATE,ESCROW_PAY_ID,FILE_NAME from SENDER_MASTER and INWARD_TRN bassedon INW_TRN_ID
+DB --> ESB :  return data
+ESB -> ESB : if failed to retrive data throw SQL EXCEPTION
+
+ESB -> FN : update sibescrowchild table set UTR = NEFT_UTR_NO_FINAL;
+FN --> ESB : updated table
+
+ESB -> DB : update INWARD_TRN set RTGS_NEFT_SEND_PAYLOAD_ID,RTGS_NEFT_TRN_ID,STATUS_LKP_ID
+DB --> ESB : updated table
 
 @enduml

@@ -1,4 +1,4 @@
-@startuml
+@startuml NEFT RECIEVE
 
 participant ESB
 Database "DB" as DB
@@ -70,12 +70,5 @@ ESB -> DB : update INWARD_TRN set STATUS_LKP_ID =v_Status_CD based on RTGS_NEFT_
 DB --> ESB : table updated
 
 ESB -> ESB : if update failed THROW ERROR (Failed to update the status of the Message)
-
-
-            
-
-
-
-
 
 @enduml
