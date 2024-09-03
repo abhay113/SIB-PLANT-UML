@@ -1,0 +1,22 @@
+@startuml RTGS INPUT 
+
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+
+MQ-> ESB :  Message in the MQ RTG.INCOMING is recieved
+
+ESB -> ESB : If mandatory fields are missing Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: If LogReq = "Y" send message to EAI.MSGLOG.MGT.IN queue
+MQ --> ESB: message inserted
+
+ESB -> MQ : message send to BKP.RTGS.CBS queue
+MQ --> ESB : message recieved
+
+ESB -> MQ : message send to RTGS.CBS queue
+MQ --> ESB : message recieved
+
+MQ -> MQ : message send to RTGS.HUB queue
+
+@enduml

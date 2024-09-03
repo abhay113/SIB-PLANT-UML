@@ -1,0 +1,108 @@
+@startuml RTGS SEND
+
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+Database "Extenal API" as RTGS
+
+MQ-> ESB :  Message in the MQ PAYHUB.RTGS.SEND.IN is recieved
+
+ESB -> ESB : If mandatory fields are missing Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: If LogReq = "Y" send message to EAI.MSGLOG.MGT.IN queue
+MQ --> ESB: message inserted
+
+ESB -> DB : Fetch XML payload from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch STS_LKP_CD from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> ESB : Convert the Data into BLOB format
+
+alt UPDT_MSG_BLOB is NULL
+    ESB -> ESB : Throw Exception "Status of Message is Invalid"
+end
+
+ESB -> ESB : Convert the Data into XMLNSC format
+
+alt STS_LKP_CODE = 'CK_VERIFIED'
+    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new payload
+    DB --> ESB : returns update status
+    alt SQLCODE <> 0 
+        ESB -> ESB : Throw Exception "Failed to update IFSC code to database"
+    end
+end
+
+ESB -> ESB :  Retrieve BENEF_IFSC
+ESB -> FN : select tbaadm.brbic.bank_code,tbaadm.brbic.BRANCH_CODE,tbaadm.bct.BR_NAME,tbaadm.bkc.BANK_NAME from  tbaadm.brbic,tbaadm.bkc,tbaadm.bct based on BENEF_IFSC
+FN --> ESB : Returns data
+
+alt data is not retrived
+    ESB -> DB : Update INWARD_TRN table set LAST_ERR_TXT = 'Invalid Beneficiary IFSC',LAST_ERR_CD='H05',STATUS_LKP_ID =407
+    DB --> ESB : table updated
+    ESB -> ESB : Throw Exception "BankId and BranchId Not Found For RTGS Request."
+end
+
+ESB -> DB : select TRN_DATE, BANK_CHARGES,INW_TRN_ID from TRANSACTION_PAYLOAD & INWARD_TRN based on INW_TRN_ID
+DB --> ESB : Returns data
+
+ESB -> DB : select FINACLE_ACC_NO from SENDER_MASTER based on SENDER_CD
+DB --> ESB : Returns data
+
+ESB -> DB : select LKP_ID (NGRTGS_SEND) from from dual
+DB --> ESB : return LKP_ID
+ESB -> ESB : if failed to retrive LKP_ID THROW EXCEPTIONN (Failed to fetch Status ID - NGRTGS_SEND)
+
+ESB -> DB : select PAYLOAD_SEQ from from dual
+DB --> ESB : return PAYLOAD_SEQ
+ESB -> ESB : if failed to retrive PAYLOAD_SEQ THROW EXCEPTIONN (Payload Sequence Number cannot be generated)
+
+ESB -> DB : insert (PAYLOAD_ID, INW_TRN_ID, PAYLOAD, CREATED_BY, CREATED_ON) into TRANSACTION_PAYLOAD
+DB --> ESB : data inserted
+
+ESB -> DB : update INWARD_TRN set RTGS_NEFT_SEND_PAYLOAD_ID and STATUS_LKP_ID based on  INW_TRN_ID
+DB --> ESB : table updated
+
+ESB -> DB : select DESTINATION_URL from dual 
+DB --> ESB : return 
+
+ESB -> RTGS : send request to external api
+RTGS --> ESB : return response
+alt request successfull
+
+    ESB -> ESB : Convert message into BLOB format 
+
+    ESB -> DB : select SEQ_INW_PAYLOAD from DUAL 
+    DB --> ESB : returns SEQ_INW_PAYLOAD
+
+    ESB -> DB : Insert (PAYLOAD_ID,SEQ_INW_PAYLOAD, PAYLOAD, CREATED_BY, CREATED_ON) into TRANSACTION_PAYLOAD
+    DB --> ESB : data inserted  
+
+    ESB -> ESB: Check Trn_Status
+    alt If Trn_Status = 'SUCCESS'
+        ESB -> DB: SELECT GET_LKPID('NGRTGS_SUCCESS') FROM DUAL
+        DB -> ESB: Return LOOKUP_ID for 'NGRTGS_SUCCESS'
+    else If Trn_Status = 'FAILURE'
+        ESB -> DB:  SELECT GET_LKPID('NGRTGS_SENDFAIL') FROM DUAL
+        DB -> ESB: Return LOOKUP_ID for 'NGRTGS_SENDFAIL'
+    else
+        ESB -> DB:  SELECT GET_LKPID('NGRTGS_MANUAL') FROM DUAL
+        DB -> ESB: Return LOOKUP_ID for 'NGRTGS_MANUAL'
+    end
+
+    ESB -> DB : update INWARD_TRN set RTGS_NEFT_RECEIVE_PAYLOAD_ID,RTGS_NEFT_TRN_ID,LAST_ERR_CD,LAST_ERR_TXT,STATUS_LKP_ID  based on INW_TRN_ID
+    DB --> ESB : table updated
+
+    ESB -> ESB : if updation failed THROW EXCEPTION  (Failed to update the status of the Message to database for Transaction ID)
+else
+    ESB -> ESB : IF INWTRNID = 0 then THROW EXCEPTION (Invalid Inward Transaction ID found while updating Failure status)
+    ESB -> DB : update INWARD_TRN table STATUS_LKP_ID ='NGRTGS_MANUAL' based on INW_TRN_ID
+    DB --> ESB : table updated
+    ESB -> ESB : if updation failed then THROW EXCEPTION (Failed to update the status of the Message to database)  
+end
+
+@enduml
