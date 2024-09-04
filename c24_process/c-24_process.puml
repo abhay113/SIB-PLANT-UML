@@ -328,7 +328,6 @@ ESB -> DB: Retrieve IP, Port, Source, Profile from CBS_TCPIP
 DB --> ESB: Return IP, Port, Source, Profile
 ESB -> ESB: Store IP, Port, Source, Profile in TCPCacheTable
 
-
 ESB -> ESB: Check if Cache is Refreshed
 alt Cache is Refreshed
     ESB -> ESB: Reset counterval

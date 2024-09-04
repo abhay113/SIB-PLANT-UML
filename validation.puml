@@ -6,12 +6,9 @@ Queue "MQ" as MQ
 Database "Extenal DB" as FN
 
 DB -> MQ : DB Trigger puts the Message in the MQ (PAYHUB.MKCH.VALIDATION.IN)
-MQ -> ESB : Validates the mandatory fields are present or not
+MQ --> ESB : Message Recieved
 
-alt missingMandatoryFieldsChr <>  ''
-    ESB -> ESB : Throw Exception "Mandatory fields are not present"
-end
-
+ESB -> ESB : if any missing mandatory fields then Throw Exception "Mandatory fields are not present"
 
 alt LogReq = 'Y'
     ESB -> MQ: send message to EAI.MSGLOG.MGT.IN queue

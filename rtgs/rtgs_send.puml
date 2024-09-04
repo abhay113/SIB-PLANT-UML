@@ -37,7 +37,7 @@ alt STS_LKP_CODE = 'CK_VERIFIED'
     end
 end
 
-ESB -> ESB :  Retrieve BENEF_IFSC
+ESB -> ESB :  Retrieve BENEF_IFSC from input   
 ESB -> FN : select tbaadm.brbic.bank_code,tbaadm.brbic.BRANCH_CODE,tbaadm.bct.BR_NAME,tbaadm.bkc.BANK_NAME from  tbaadm.brbic,tbaadm.bkc,tbaadm.bct based on BENEF_IFSC
 FN --> ESB : Returns data
 
@@ -46,6 +46,7 @@ alt data is not retrived
     DB --> ESB : table updated
     ESB -> ESB : Throw Exception "BankId and BranchId Not Found For RTGS Request."
 end
+
 
 ESB -> DB : select TRN_DATE, BANK_CHARGES,INW_TRN_ID from TRANSACTION_PAYLOAD & INWARD_TRN based on INW_TRN_ID
 DB --> ESB : Returns data
