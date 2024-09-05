@@ -1,5 +1,4 @@
-@startuml
-
+@startuml IMPS_RRN
 
 participant ESB
 Database "DB" as DB
@@ -111,8 +110,15 @@ else
             ESB -> ESB : TRN_Status = 'IMPS_RRN_RETRY';
         else 
             ESB -> MQ : send message to IMPS_TO_NEFT_Q queue
-            MQ --> ESB : message recieved
-        end
+            MQ --> ESB : message sent back to ESB 
+
+            ESB-> DB : select SENDER_CD, IMPS_TO_NEFT_YN FROM SENDER_MASTER based on SENDER_ID
+            DB --> ESB : return SENDER_CD, IMPS_TO_NEFT_YN
+            alt IMPS_TO_NEFT_YN = 'Y' and RTN_WINDOW_STATUS = 'SUCCESS'
+                ESB -> ESB: TRN_Status = 'C24_SCHEDULED'
+                ESB -> DB: Update INWARD_TRN set SELF_OTHER_FLAG = 'N', STATUS_LKP_ID = TRN_Status 
+                ESB --> DB: table updated
+            end
         
         ESB -> DB : update INWARD_TRN set STATUS_LKP_ID = TRN_Status base on INW_TRN_ID
         DB --> ESB: table updated

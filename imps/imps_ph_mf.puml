@@ -1,4 +1,216 @@
-@startuml
+@startuml PH MF
 
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+Database "SOAP" as SOAP
+
+DB -> MQ : Database trigger puts message in 'PAYHUB.IMPS.GET.RRN.IN' queue
+MQ --> ESB : Message recieved
+
+ESB -> ESB : If mandatory fields are missing Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: If LogReq = "Y" send message to EAI.MSGLOG.MGT.IN queue
+MQ --> ESB: message inserted
+
+ESB -> DB : Fetch XML payload from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch STS_LKP_CD from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> ESB : Convert the Data into BLOB format
+
+ESB -> ESB : UPDT_MSG_BLOB is NULL then Throw Exception "Status of Message is Invalid"
+
+ESB -> ESB : Convert the Data into XMLNSC format
+
+alt STS_LKP_CODE = 'CK_VERIFIED'
+    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new data
+    DB --> ESB : returns update status
+    ESB -> ESB : if updation failed then Throw Exception ("Failed to update IFSC code to database")
+end
+
+ESB -> DB : select HOST FROM EXCHANGE_HOUSE_MASTER
+DB --> ESB : Returns LKPID
+
+alt HOST ='CORP'
+    ESB -> DB : select UUID_ID, RTGS_NEFT_TRN_ID from INWARD_TRN based on INW_TRN_ID
+    DB --> ESB : returns UUID_ID and RTGS_NEFT_TRN_ID
+    ESB -> ESB : if failed to retrive data THROW EXCEPTION (Failed to fetch Inward Transaction ID Details)
+    ESB -> DB : select FINACLE_ACC_NO from SENDER_MASTER based on SENDER_ID
+    DB --> ESB : returns FINACLE_ACC_NO
+
+    ESB -> DB : select NEFT_SENDER_IFSC, FINACLE_ACC_NO from SENDER_MASTER based on SENDER_ID
+    DB --> ESB : returns NEFT_SENDER_IFSC and FINACLE_ACC_NO
+
+    ESB -> DB : select  SCH_CODE, GL_SUBHEAD, CONSTITUTION_CODE FROM CBS_ACC_MAPPER based on FINACLE_ACC_NO
+    DB --> ESB : returns  SCH_CODE, GL_SUBHEAD, CONSTITUTION_CODE
+
+    ESB -> DB : select  OFFICE_ACCOUNTS FROM DUAL
+    DB --> ESB : returns  OFFICE_ACCOUNTS
+
+    alt data found 
+        ESB -> DB : SELECT ACCOUNT_TYPE FROM IMPS_PAYER_VALIDATION based on SCH_CODE
+        DB --> ESB : returns ACCOUNT_TYPE
+
+        ESB -> DB : select MCC_CODE,ENTITY_TYPE from DUAL
+        DB --> ESB : returns MCC_CODE,ENTITY_TYPE
+        
+        ESB -> DB: select GET_PARAM_VALUE('IMPS_PAYER_RETAIL', 'CONSTITUTION_CODE')
+        DB --> ESB: return RETAIL_CUSTOMER
+
+        alt IFSC CODE is same in DB and Input
+            ESB -> DB: select MCC_CODE, ENTITY_TYPE from DUAL
+            DB --> ESB: return MCC_CODE, ENTITY_TYPE
+        else IFSC CODE not same
+            ESB -> DB: select LKPCD(SOURCE_LKP_ID) from  INWARD_TRN based on INW_TRN_ID
+            DB --> ESB: return LKPCD
+
+            alt LKPCD= 'WEB'
+                ESB -> DB: select MCC_CODE, ENTITY_TYPE from DUAL
+                DB --> ESB: return MCC_CODE, ENTITY_TYPE
+
+            else LKPCD= 'FILE_INPUT'
+                ESB -> DB: select MCC_CODE, ENTITY_TYPE from DUAL
+                DB --> ESB: return MCC_CODE, ENTITY_TYPE
+            end
+        else  ONE_CARD contains FINACLE_ACC_NO
+            ESB -> DB: select MCC_CODE, ENTITY_TYPE from DUAL
+            DB --> ESB: return MCC_CODE, ENTITY_TYPE
+        end
+    end
+
+    ESB -> DB: select LKPID(IMPS_SEND) from DUAL
+    DB --> ESB : returns LKPID
+    ESB -> ESB : IF LKPID not found THROW EXCEPTION (Failed to fetch Status ID - IMPS_SEND) 
+
+    ESB -> DB: select PAYLOAD_SEQ from DUAL
+    DB --> ESB : returns PAYLOAD_SEQ
+    ESB -> ESB : IF PAYLOAD_SEQ not found THROW EXCEPTION (Payload Sequence Number cannot be generated)
+
+    ESB -> DB : insert (PAYLOAD_ID, INW_TRN_ID, PAYLOAD, CREATED_BY, CREATED_ON) into TRANSACTION_PAYLOAD
+    DB --> ESB : data inserted
+    
+    ESB -> DB : update INWARD_TRN set RTGS_NEFT_SEND_PAYLOAD_ID,STATUS_LKP_ID
+    DB --> ESB : table updated
+
+    ESB -> DB : select DESTINATION from DUAL
+    DB --> ESB : returns DESTINATION
+
+    ESB -> SOAP : send request
+    SOAP --> ESB : return response
+    alt success 
+        ESB -> DB: select PAYLOAD_SEQ from DUAL
+        DB --> ESB : returns PAYLOAD_SEQ
+        ESB -> ESB : IF PAYLOAD_SEQ not found THROW EXCEPTION (Payload Sequence Number cannot be generated)
+        
+        ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+        DB --> ESB : Returns data
+
+        ESB -> DB : select RTNCD_TEXT,RTNCD_DESC,ACTION_CD from RETURN_CODE_MASTER
+        DB --> ESB : return RTNCD_TEXT,RTNCD_DESC,ACTION_CD
+        alt data not found 
+            ESB -> ESB : v_Status_CD 	= 'IMPS_MANUAL'
+        else 
+            ESB -> ESB : v_Status_CD 	= ACTION_CD
+        end
+
+        ESB -> DB : update INWARD_TRN set STATUS_LKP_ID =v_Status_CD,LAST_ERR_CD, LAST_ERR_TXT,RTGS_NEFT_RECEIVE_PAYLOAD_ID
+
+        DB --> ESB : table updated
+        ESB-> ESB : if updation failed THROW EXCEPTION (Failed to update the status of the Message )
+    else failure
+        ESB -> ESB : if INWTRNID ='0' THROW EXCEPTION (Invalid Inward Transaction ID found)
+        ESB -> DB : call get_IMPS_retry()
+        DB --> ESB : return data
+
+        alt AVBL_Retry_count > 0
+            ESB -> ESB :  TRN_Status = 'IMPS_RETRY'
+        else
+            ESB -> ESB :  TRN_Status = 'IMPS_MANUAL'
+        end
+        ESB -> DB : update INWARD_TRN set STATUS_LKP_ID = TRN_Status
+        DB --> ESB : table updated
+        ESB -> ESB : if updation failed THROW EXCEPTION (Failed to update the status of the Message)
+    end
+    
+else HOST !='CORP'
+
+    ESB -> DB : select UUID_ID, RTGS_NEFT_TRN_ID from INWARD_TRN based on INW_TRN_ID
+    DB --> ESB : returns UUID_ID and RTGS_NEFT_TRN_ID
+    ESB -> ESB : if failed to retrive data THROW EXCEPTION (Failed to fetch Inward Transaction ID Details)
+    ESB -> DB : select FINACLE_ACC_NO from SENDER_MASTER based on SENDER_ID
+    DB --> ESB : returns FINACLE_ACC_NO
+    ESB -> DB : select NEFT_SENDER_IFSC, FINACLE_ACC_NO from SENDER_MASTER based on SENDER_ID
+    DB --> ESB : returns NEFT_SENDER_IFSC and FINACLE_ACC_NO
+    ESB -> DB : select  SCH_CODE, GL_SUBHEAD, CONSTITUTION_CODE FROM CBS_ACC_MAPPER based on FINACLE_ACC_NO
+    DB --> ESB : returns  SCH_CODE, GL_SUBHEAD, CONSTITUTION_CODE
+
+    alt data found 
+        ESB -> DB : SELECT ACCOUNT_TYPE FROM IMPS_PAYER_VALIDATION based on SCH_CODE
+        DB --> ESB : returns ACCOUNT_TYPE
+
+        ESB -> DB : select MCC_CODE,ENTITY_TYPE from DUAL
+        DB --> ESB : returns MCC_CODE,ENTITY_TYPE
+    end
+
+    ESB -> DB: select LKPID(IMPS_SEND) from DUAL
+    DB --> ESB : returns LKPID
+    ESB -> ESB : IF LKPID not found THROW EXCEPTION (Failed to fetch Status ID - IMPS_SEND) 
+
+    ESB -> DB: select PAYLOAD_SEQ from DUAL
+    DB --> ESB : returns PAYLOAD_SEQ
+    ESB -> ESB : IF PAYLOAD_SEQ not found THROW EXCEPTION (Payload Sequence Number cannot be generated)
+
+    ESB -> DB : insert (PAYLOAD_ID, INW_TRN_ID, PAYLOAD, CREATED_BY, CREATED_ON) into TRANSACTION_PAYLOAD
+    DB --> ESB : data inserted
+    
+    ESB -> DB : update INWARD_TRN set RTGS_NEFT_SEND_PAYLOAD_ID,STATUS_LKP_ID
+    DB --> ESB : table updated
+
+    ESB -> DB : select DESTINATION from DUAL
+    DB --> ESB : returns DESTINATION
+
+    ESB -> SOAP : send request
+    SOAP --> ESB : return response
+    alt success 
+        ESB -> DB: select PAYLOAD_SEQ from DUAL
+        DB --> ESB : returns PAYLOAD_SEQ
+        ESB -> ESB : IF PAYLOAD_SEQ not found THROW EXCEPTION (Payload Sequence Number cannot be generated)
+        
+        ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+        DB --> ESB : Returns data
+
+        ESB -> DB : select RTNCD_TEXT,RTNCD_DESC,ACTION_CD from RETURN_CODE_MASTER
+        DB --> ESB : return RTNCD_TEXT,RTNCD_DESC,ACTION_CD
+        alt data not found 
+            ESB -> ESB : v_Status_CD 	= 'IMPS_MANUAL'
+        else 
+            ESB -> ESB : v_Status_CD 	= ACTION_CD
+        end
+
+        ESB -> DB : update INWARD_TRN set STATUS_LKP_ID =v_Status_CD,LAST_ERR_CD, LAST_ERR_TXT,RTGS_NEFT_RECEIVE_PAYLOAD_ID
+
+        DB --> ESB : table updated
+        ESB-> ESB : if updation failed THROW EXCEPTION (Failed to update the status of the Message )
+    else failure
+        ESB -> ESB : if INWTRNID ='0' THROW EXCEPTION (Invalid Inward Transaction ID found)
+        ESB -> DB : call get_IMPS_retry()
+        DB --> ESB : return data
+
+        alt AVBL_Retry_count > 0
+            ESB -> ESB :  TRN_Status = 'IMPS_RETRY'
+        else
+            ESB -> ESB :  TRN_Status = 'IMPS_MANUAL'
+        end
+        ESB -> DB : update INWARD_TRN set STATUS_LKP_ID = TRN_Status
+        DB --> ESB : table updated
+        ESB -> ESB : if updation failed THROW EXCEPTION (Failed to update the status of the Message)
+    end
+end
 
 @enduml

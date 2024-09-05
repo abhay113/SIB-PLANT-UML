@@ -58,7 +58,6 @@ alt TRANSACTION_TYPE = 'T'
     
     end
 
-    
     ESB -> ESB: if DONOR_MSG = 'Success' Then THROW EXCEPTION (ISO0070001: FCRA Restricted Foreign Donors)
     
     ESB -> DB: SELECT SEQ_STAN_ID.NEXTVAL as STANID FROM DUAL
