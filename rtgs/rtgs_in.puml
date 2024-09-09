@@ -4,7 +4,8 @@ participant ESB
 Database "DB" as DB
 Queue "MQ" as MQ
 
-MQ-> ESB :  Message in the MQ RTG.INCOMING is recieved
+DB -> MQ : Trigger puts the message in RTG.INCOMING queue
+MQ --> ESB :  Message in the MQ RTG.INCOMING is recieved
 
 ESB -> ESB : If mandatory fields are missing Throw Exception "Mandatory fields are not present"
 

@@ -5,7 +5,8 @@ Database "DB" as DB
 Queue "MQ" as MQ
 Database "Extenal API" as RTGS
 
-MQ-> ESB :  Message in the MQ PAYHUB.RTGS.SEND.IN is recieved
+DB -> MQ : Trigger puts the message in PAYHUB.RTGS.SEND.IN queue
+MQ --> ESB :  Message in the MQ PAYHUB.RTGS.SEND.IN is recieved
 
 ESB -> ESB : If mandatory fields are missing Throw Exception "Mandatory fields are not present"
 

@@ -1,4 +1,4 @@
-@startuml
+@startuml UPI VERIFY
 
 participant ESB
 Database "DB" as DB
@@ -65,7 +65,6 @@ DB --> DB : return DESTIONATION
 ESB -> UPI : send HTTP request with encrypted data
 UPI --> ESB : return response
 
-
 alt 
     ESB -> ESB : get the response and decrypt it
     ESB -> ESB : convert it into BLOB format
@@ -97,6 +96,5 @@ else failure
     DB --> ESB : table updated
     ESB -> ESB : if failed to update then THROW EXCEPTION (Failed to update the status of the Message)
 end
-
 
 @enduml

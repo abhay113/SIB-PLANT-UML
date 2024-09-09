@@ -27,9 +27,7 @@ DB --> ESB : Returns data
 
 ESB -> ESB : Convert the Data into BLOB format
 
-alt UPDT_MSG_BLOB is NULL
-    ESB -> ESB : Throw Exception "Status of Message is Invalid"
-end
+ESB -> ESB : if UPDT_MSG_BLOB is NULL then Throw Exception "Status of Message is Invalid"
 
 ESB -> ESB : Convert the Data into XMLNSC format
 
@@ -55,12 +53,10 @@ end
 ESB -> FN : Insert SOL_ID, PARTY_CODE, BATCH_DATE, BENEFICIARY_AC_NO, IFSC, EMAIL_ID, MOBILE_NO in sibescrowchild table
 FN --> ESB : return insertion status 
 
-alt SQLCODE <> 0
-    ESB -> ESB : Error : 'Insertion Failed'
-end
+ESB -> ESB : if insertion failed THROW EXCEPTION 'Insertion Failed'
 
 alt length of AccNo >16 and TRN_TYPE = 'S'
-    ESB -> DB : Update STATUS_LKP_ID TO (LKP_CODE = 'TRN_REJECTED') && ERR = 'Account No. is Greater than 16 digits'
+    ESB -> DB : Update INWARD_TRN table set  STATUS_LKP_ID TO (LKP_CODE = 'TRN_REJECTED') && ERR = 'Account No. is Greater than 16 digits'
     ESB -> ESB : Throw Exception "Transaction failed due to invalid AccNo"
 end
 
@@ -70,7 +66,7 @@ ESB -> FN : Check SW59_ACCOUNT_CODE exist in CBS_ACC_MAPPER table
     else Account Not Exist && Transaction Type = 'S'
         ESB -> DB : Fetch VAN URL From PARAMETER_MASTER table
         DB --> ESB : Returns VAN URL
-        ESB -> FN : Create VAN Request  `check what to do here
+        ESB -> FN : Create VAN Request  
         FN --> ESB : Returns Response
 
         alt VAN_EXIST = 'Y' 
@@ -155,14 +151,5 @@ alt Transaction_Type = 'N'
         ESB -> DB: Update status to 'C24 SCHEDULED'
     end
 end
-
-
-
-
-
-
-
-
-
 
 @enduml
