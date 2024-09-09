@@ -12,7 +12,6 @@ alt missingMandatoryFieldsChr <>  ''
     ESB -> ESB : Throw Exception "Mandatory fields are not present"
 end
 
-
 alt LogReq = 'Y'
     ESB -> MQ: send message to EAI.MSGLOG.MGT.IN queue
 else

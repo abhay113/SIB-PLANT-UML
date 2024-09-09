@@ -37,7 +37,7 @@ end
 ESB -> DB : select GET_LKPID (IMPS_RRN_SEND) from DUAL
 DB --> ESB : Return LKPID
 
-ESB -> ESB if LKPID not found Throw Error IMPS SEND REQUEST
+ESB -> ESB: if LKPID not found Throw Error IMPS SEND REQUEST
 
 ESB -> DB : select PAYLOAD_SEQ from DUAL
 DB -->ESB : return PAYLOAD_SEQ

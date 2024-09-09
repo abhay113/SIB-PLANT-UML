@@ -1,4 +1,126 @@
-@startuml
+@startuml ENQUIRY
 
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+participant "SOAP" as SOAP
+
+DB -> MQ : Database trigger puts message in 'PAYHUB.IMPS.GET.RRN.IN' queue
+MQ --> ESB : Message recieved
+
+ESB -> ESB : If mandatory fields are missing Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: If LogReq = "Y" send message to EAI.MSGLOG.MGT.IN queue
+MQ --> ESB: message inserted
+
+ESB -> DB : Fetch XML payload from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch STS_LKP_CD from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> ESB : Convert the Data into BLOB format
+
+ESB -> ESB : UPDT_MSG_BLOB is NULL then Throw Exception "Status of Message is Invalid"
+
+ESB -> ESB : Convert the Data into XMLNSC format
+
+alt STS_LKP_CODE = 'CK_VERIFIED'
+    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new data
+    DB --> ESB : returns update status
+    ESB -> ESB : if updation failed then Throw Exception ("Failed to update IFSC code to database")
+end
+
+
+ESB -> DB : select RTGS_NEFT_TRN_ID from   INWARD_TRN based on TRN_ID
+DB --> ESB : return RTGS_NEFT_TRN_ID
+ESB -> ESB : If RTGS_NEFT_TRN_ID is NULL then Throw Exception "Failed to fetch Inward Transaction ID Details"
+
+ESB -> DB : SELECT LKPID(''IMPS_ENQ_SEND'') from DUAL
+DB --> ESB : return data
+ESB -> ESB : if failed to retrive data THROW EXCEPTION (Failed to fetch Status ID)
+
+ESB -> DB: select PAYLOAD_SEQ from DUAL
+DB --> ESB : returns PAYLOAD_SEQ
+ESB -> ESB : IF PAYLOAD_SEQ not found THROW EXCEPTION (Payload Sequence Number cannot be generated)
+
+ESB -> DB : insert (PAYLOAD_ID, INW_TRN_ID, PAYLOAD, CREATED_BY, CREATED_ON) into TRANSACTION_PAYLOAD
+DB --> ESB : data inserted
+
+ESB -> DB : update INWARD_TRN set RTGS_NEFT_SEND_PAYLOAD_ID,STATUS_LKP_ID
+DB --> ESB : table updated
+
+ESB -> DB : select DESTINATION from DUAL
+DB --> ESB : returns DESTINATION
+
+ESB -> SOAP : send request
+SOAP --> ESB : return response
+
+alt success 
+    ESB -> DB: SELECT RTNCD_TEXT, RTNCD_DESC, ACTION_CD FROM RETURN_CODE_MASTER WHERE RTNCD_CODE = ResponseCode
+    DB --> ESB: RETURN_CODE
+
+    alt If no RETURN_CODE found
+        ESB -> DB: SELECT get_IMPS_retry(INW_TRN_ID) FROM DUAL
+        DB --> ESB: AVBL_Retry
+
+        alt If retry count > 0
+            ESB -> ESB:  v_Status_CD = 'IMPS_RETRY'
+        else 
+            ESB -> ESB:  v_Status_CD = 'IMPS_MANUAL'
+        end
+    else 
+        alt If ResponseCode is '91' or '500'
+            ESB -> DB: SELECT get_IMPS_retry(INW_TRN_ID) FROM DUAL
+            DB --> ESB: AVBL_Retry
+
+            alt retry count > 0
+                ESB -> ESB: Set v_Status_CD = 'IMPS_RETRY'
+            else 
+                ESB -> ESB: Set v_Status_CD = 'IMPS_MANUAL'
+            end
+        else 
+            ESB -> ESB: Set v_Status_CD from RETURN_CODE
+            ESB -> ESB: Set v_ERR_TXT from RETURN_CODE
+        end
+    end
+    ESB -> DB: UPDATE INWARD_TRN SET STATUS_LKP_ID =v_Status_CD
+    DB --> ESB: Update Status
+
+    alt If update fails
+        ESB -> ESB: THROW exception
+    end
+
+    ESB -> DB: SELECT SEQ_INW_PAYLOAD.NEXTVAL FROM DUAL
+    DB --> ESB: PAYLOAD_SEQ
+
+    alt If no PAYLOAD_SEQ
+        ESB -> ESB: THROW exception
+    end
+
+    ESB -> DB: INSERT INTO TRANSACTION_PAYLOAD (PAYLOAD_ID, PAYLOAD) VALUES (PAYLOAD_SEQ, RspData)
+    DB --> ESB: Insert Payload
+
+    alt If insert fails
+        ESB -> ESB: THROW exception
+    end
+
+else failure
+    ESB -> ESB : if INWTRNID ='0' THROW EXCEPTION (Invalid Inward Transaction ID found)
+    ESB -> DB : call get_IMPS_retry()
+    DB --> ESB : return data
+
+    alt AVBL_Retry_count > 0
+        ESB -> ESB :  TRN_Status = 'IMPS_RETRY'
+    else
+        ESB -> ESB :  TRN_Status = 'IMPS_MANUAL'
+    end
+    ESB -> DB : update INWARD_TRN set STATUS_LKP_ID = TRN_Status
+    DB --> ESB : table updated
+    ESB -> ESB : if updation failed THROW EXCEPTION (Failed to update the status of the Message)
+end
 
 @enduml

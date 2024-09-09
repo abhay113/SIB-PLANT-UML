@@ -33,13 +33,9 @@ ESB -> ESB : Convert the Data into XMLNSC format
 alt STS_LKP_CODE = 'CK_VERIFIED'
     ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new XML payload
     DB --> ESB : returns update status
-    alt SQLCODE <> 0 
-        ESB -> ESB : Throw Exception "Failed to update IFSC code to database"
-    end
+    ESB -> ESB : if updation failed Throw Exception "Failed to update IFSC code to database"
 end
 '2 subflows'
-
-
 
 ESB -> DB : Select CBSREF from INWARD_TRN
 DB --> ESB : return data

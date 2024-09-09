@@ -1,0 +1,103 @@
+@startuml UPI
+
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+participant "UPI API" as UPI
+
+DB -> MQ : DB Trigger puts the Message in the MQ (PAYHUB.UPI.SEND.IN)
+MQ --> ESB : Returns the Message
+
+ESB -> ESB : If mandatory fields are missing Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: If LogReq = "Y" send message to EAI.MSGLOG.MGT.IN queue
+MQ --> ESB: message inserted
+
+ESB -> DB : Fetch XML payload from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch STS_LKP_CD from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> ESB : Convert the Data into BLOB format
+
+alt UPDT_MSG_BLOB is NULL
+    ESB -> ESB : Throw Exception "Status of Message is Invalid"
+end
+
+ESB -> ESB : Convert the Data into XMLNSC format
+
+alt STS_LKP_CODE = 'CK_VERIFIED'
+    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new XML payload
+    DB --> ESB : returns update status
+    ESB -> ESB : if updation failed Throw Exception "Failed to update IFSC code to database"
+end
+'2 subflows'
+
+ESB -> DB : select MERCHANT_ID, ENC_KEY, EXCHANGE_HOUSE_NAME, FINACLE_ACC_NO from EXCHANGE_HOUSE_MASTER & SENDER_MASTER
+DB --> ESB : returns data
+ESB -> ESB : if failed to recieve data THROW EXCEPTION (Failed to fetch Data From Sender Master)
+
+ESB -> ESB : encrypt the data by external java function 
+
+
+ESB -> DB : select LKPID(UPI_SEND) from DUAL 
+DB --> ESB : return LKPID
+
+ESB -> ESB: if failed to retrive LKPID  THROW EXCEPTION (Failed to fetch Status ID - UPI_SEND)
+
+ESB -> DB : select PAYLOAD_SEQ from DUAL
+DB --> ESB : return PAYLOAD_SEQ
+ESB -> ESB: if failed to retrive PAYLOAD_SEQ  THROW EXCEPTION (Payload Sequence Number cannot be generated)
+
+ESB -> DB : insert (PAYLOAD_ID, INW_TRN_ID, PAYLOAD, CREATED_BY, CREATED_ON) into TRANSACTION_PAYLOAD
+DB -->ESB : data insert
+
+ESB -> DB : update INWARD_TRN set RTGS_NEFT_SEND_PAYLOAD_ID, STATUS_LKP_ID 
+DB -->ESB : table updated
+ESB -> ESB: if failed to update THROW EXCEPTION 
+
+ESB -> DB : select DESTINATION from DUAL
+DB --> DB : return DESTIONATION
+
+ESB -> UPI : send HTTP request with encrypted data
+UPI --> ESB : return response
+
+alt success  
+    ESB -> ESB : get the response and decrypt it
+    ESB -> ESB : convert it into BLOB format
+    
+    ESB -> ESB : if INWTRNID = 0 then THROW exception (Invalid Inward Transaction ID found)
+    ESB -> DB : update INWARD_TRN set STATUS_LKP_ID =TRN_Status based on INW_TRN_ID
+    DB --> ESB : table updateds
+
+    ESB -> DB : select MYSEQ2 from DUAL
+    DB --> ESB : return MYSEQ2
+    
+    ESB -> DB : insert (PAYLOAD_ID, INW_TRN_ID, PAYLOAD, CREATED_BY, CREATED_ON) into TRANSACTION_PAYLOAD
+    DB -->ESB : data insert
+
+    alt TxnStatus = 'S' OR TxnStatus = 'T'
+        ESB -> ESB :TRAN_STATUS_ID="UPI_SUCCESS"
+    else RspCD = 'BT'
+        ESB -> ESB :TRAN_STATUS_ID="UPI_MANUAL"
+    else TxnStatus = 'F'
+        ESB -> ESB :TRAN_STATUS_ID="UPI_SENDFAILED"
+    else TxnStatus = 'P'
+        ESB -> ESB :TRAN_STATUS_ID="UPI_ENQUIRY"
+    end
+    ESB -> DB : update INWARD_TRN set LAST_ERR_CD,LAST_ERR_TXT, RTGS_NEFT_TRN_ID,RTGS_NEFT_RECEIVE_PAYLOAD_ID, STATUS_LKP_ID based on INW_TRN_ID
+    DB --> ESB: table updated    
+    ESB -> ESB : if updation failed THROW EXCEPTION (Failed to update the status of the Message) 
+
+else failure
+    ESB -> ESB : if INWTRNID = 0 then THROW exception (Invalid Inward Transaction ID found)
+    ESB -> DB : update INWARD_TRN set STATUS_LKP_ID =TRN_Status based on INW_TRN_ID
+    DB --> ESB : table updated
+    ESB -> ESB : if failed to update then THROW EXCEPTION (Failed to update the status of the Message)
+end
+
+@enduml
