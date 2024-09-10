@@ -1,0 +1,57 @@
+@startuml UPDATE TRN
+
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+Database "Extenal DB" as FN
+
+DB -> MQ : DB Trigger puts the Message in the MQ (PAYHUB.MKCH.VALIDATION.IN)
+MQ --> ESB : Message Recieved
+
+ESB -> ESB : if any missing mandatory fields then Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: if LogReq = 'Y' THEN send message to EAI.MSGLOG.MGT.IN queue
+
+ESB -> DB : Fetch XML payload from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch STS_LKP_CD from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> ESB : Convert the Data into BLOB format
+
+ESB -> ESB : UPDT_MSG_BLOB is NULL then Throw Exception "Status of Message is Invalid"
+
+ESB -> ESB : Convert the Data into XMLNSC format
+
+alt STS_LKP_CODE = 'CK_VERIFIED'
+    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new data
+    DB --> ESB : returns update status
+    ESB -> ESB : if updation failed then Throw Exception ("Failed to update IFSC code to database")
+end
+
+ESB -> DB : select STATUSLKP(STATUS_LKP_ID) from INWARD_TRN ased on INWARD_TRN_ID
+DB --> ESB : return data
+
+ESB -> ESB : if failed to retrive data THROW EXCEPTION (Failed to get Transaction Status for the received Txn ID)
+
+alt TRN_STATUS='IMPS_SUCCESS'
+    ESB -> DB : select RTGS_NEFT_TRN_ID from INWARD_TRN based on INW_TRN_ID
+    DB --> ESB : return RTGS_NEFT_TRN_ID
+
+    ESB -> DB : update custom.rapmulti set STATUS_FLG, UTR_IMPS_REF= RTGS_NEFT_TRN_ID based on INW_TRN_ID
+    DB --> ESB : table updated
+
+    ESB -> ESB : if updation failed THROW EXCEPTION  (Failed to UPDATE Status Flag for the received Txn ID)
+else
+    ESB -> DB : update custom.rapmulti set STATUS_FLG based on INW_TRN_ID
+    DB --> ESB : table updated
+
+    ESB -> ESB : if updation failed THROW EXCEPTION  (Failed to UPDATE Status Flag for the received Txn ID)
+end
+    
+
+@enduml

@@ -1,0 +1,69 @@
+@startuml GENEARTE TRN MF
+
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+Database "Extenal DB" as FN
+
+DB -> MQ : DB Trigger puts the Message in the MQ (PAYHUB.MKCH.VALIDATION.IN)
+MQ --> ESB : Message Recieved
+
+ESB -> ESB : if any missing mandatory fields then Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: if LogReq = 'Y' THEN send message to EAI.MSGLOG.MGT.IN queue
+
+ESB -> DB : select data from INWARD_TRN based on FILE_ID
+DB --> ESB : return data 
+ESB -> ESB : if data not found THROW EXCEPTION (Failed to fetch Data For File ID)
+
+
+ESB -> DB : select LKPID(C24_SCHEDULED) , LKPID(TRN_WAIT) from DUAL
+DB --> ESB : return data
+
+ESB -> DB : select TOTAL_AMOUNT from INWARD_TRN based on FILE_ID
+DB --> ESB : return data
+
+ESB -> DB : select SEQ_INW_TRN from DUAL
+DB --> ESB : return SEQ_INW_TRN
+
+ESB -> DB : select SENDER_ID,SENDER_CD,SENDER_NAME from SENDER_MASTER & INWARD_TRN baesd on INWARD_TRN_ID
+DB --> ESB : return data
+
+ESB -> DB : select CREATED_BY from INWARD_FILES table based on FILE_ID
+DB --> ESB : retunr CREATED_BY
+
+ESB -> DB : insert the data into INWARD_TRN
+DB --> ESB : data inserted
+ESB -> ESB : if insertion failed THROW EXCEPTION
+
+ESB -> DB : update INWARD_TRN  set CONS_TRN_ID =SEQ_INW_TRN  WHERE SELF_OTHER_FLAG IN (''I'',''N'',''S'') and based on FILE_ID
+DB --> ESB : table updated
+
+ESB -> DB : select BALANCE_LIMIT from SENDER_MASTER based on SENDER_CD
+DB --> ESB : return BALANCE_LIMIT
+alt TOTAL_AMOUNT >  BALANCE_LIMIT 
+    ESB -> DB : update INWARD_TRN set STATUS_LKP_ID = (TRN_REJECTED),LAST_ERR_TXT = ''Balance Limit exceeded''
+    DB --> ESB : table updated
+
+    ESB -> DB : select FILE_ID from INWARD_TRN based on INWARD_TRN_ID
+    DB --> ESB : return FILE_ID
+    ESB -> DB : update INWARD_TRN set STATUS_LKP_ID = (TRN_DELETED), 	LAST_ERR_TXT = ''Balance Limit exceeded'',
+    DB --> ESB : table updated
+    ESB -> ESB : THROW EXCEPTION (Transaction Rejected)
+end
+
+ESB -> ESB : parse the data into XMLNSC format
+ESB -> DB : select PAYLOAD_SEQ from DUAL
+DB --> ESB : return PAYLOAD_SEQ
+
+ESB -> ESB : if data not found THEN THROW EXCEPTION (Payload Sequence Number cannot be generated)
+
+ESB -> DB : insert (PAYLOAD_ID, INW_TRN_ID, PAYLOAD, CREATED_BY, CREATED_ON) into TRANSACTION_PAYLOAD
+DB --> ESB : data inserted
+
+ESB -> ESB : if insertion failed THROW EXCEPTION  
+ESB -> DB : update INWARD_TRN set STATUS_LKP_ID = C24_STATUS_ID based on INW_TRN_ID 
+DB --> ESB : table updated
+ESB -> ESB : if updation failed THROW EXCEPTION
+
+@enduml

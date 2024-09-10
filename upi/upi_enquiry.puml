@@ -38,7 +38,7 @@ end
 '2 subflows'
 
 ESB -> DB : select MERCHANT_ID, ENC_KEY from  EXCHANGE_HOUSE_MASTER and SENDER_MASTER   based on SENDER_CD
-ESB --> DB : return data
+DB --> ESB : return data
 
 ESB -> ESB : if failed to return data THROW EXCEPTION (Failed to fetch Data From Sender Master  )
 

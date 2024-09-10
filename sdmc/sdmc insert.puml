@@ -1,0 +1,65 @@
+@startuml INSERT TRN
+
+participant ESB
+Database "DB" as DB
+Queue "MQ" as MQ
+Database "Extenal DB" as FN
+
+DB -> MQ : DB Trigger puts the Message in the MQ (PAYHUB.MKCH.VALIDATION.IN)
+MQ --> ESB : Message Recieved
+
+ESB -> ESB : if any missing mandatory fields then Throw Exception "Mandatory fields are not present"
+
+ESB -> MQ: if LogReq = 'Y' THEN send message to EAI.MSGLOG.MGT.IN queue
+
+ESB -> DB : Fetch XML payload from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch SENDER_REF from TRANSACTION_PAYLOAD and INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> DB : Fetch STS_LKP_CD from INWARD_TRN table based on TRANSACTION_ID
+DB --> ESB : Returns data
+
+ESB -> ESB : Convert the Data into BLOB format
+
+ESB -> ESB : UPDT_MSG_BLOB is NULL then Throw Exception "Status of Message is Invalid"
+
+ESB -> ESB : Convert the Data into XMLNSC format
+
+alt STS_LKP_CODE = 'CK_VERIFIED'
+    ESB -> ESB : Update the TRANSACTION_PAYLOAD table with new data
+    DB --> ESB : returns update status
+    ESB -> ESB : if updation failed then Throw Exception ("Failed to update IFSC code to database")
+end
+
+ESB -> DB : select data from  INWARD_TRN based on INW_TRN_ID
+DB --> ESB : return data
+
+ESB -> DB : select STATUSLKP(STATUS_LKP_ID),INW_TRN_ID,TRN_DATE from INWARD_TRN based on INW_TRN_ID;
+DB --> ESB : return data
+
+ESB -> DB : select SENDER_NAME,FINACLE_ACC_NO,NEFT_SENDER_IFSC from SENDER_MASTER based on SENDER_ID
+DB --> ESB:  return data
+
+ESB -> DB : select TRN_STATUS,SUSPENSEACCNUMBER from DUAL ;
+DB --> ESB : return data
+
+alt STATUSLKP ='TOTAL_DEBIT_SUCC'
+    ESB -> DB : select INW_TRN_ID from custom.rapmulti based on INW_TRN_ID;
+    DB --> ESB : return  INW_TRN_ID
+
+    alt INW_TRN_ID found
+        ESB -> DB : insert data into custom.rapmulti
+        DB --> ESB : data inserted
+
+        ESB -> ESB : if insertion failed THROW SQL EXCEPTION 
+    else 
+        ESB -> ESB : THROW EXCEPTION (Transaction Record Already Exist in custom table for Transaction_ID)
+
+    end
+else
+    ESB -> ESB : THROW EXCEPTION (Inavlid  Transaction Status from Transaction_ID)
+end
+
+@enduml
