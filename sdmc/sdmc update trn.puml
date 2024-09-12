@@ -53,5 +53,4 @@ else
     ESB -> ESB : if updation failed THROW EXCEPTION  (Failed to UPDATE Status Flag for the received Txn ID)
 end
     
-
 @enduml

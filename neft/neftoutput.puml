@@ -17,7 +17,7 @@ DB --> ESB : returned data
 
 ESB -> ESB : call SIGNBLOCK4A(BLOCK_4_STR,KEYPASS,CERTPASS,CERTPATH,ALIAS,KEYSTOREINST,ALGONAME)
 
-ESB -> DB : update INWARD_TRN set STATUS_LKP_ID =' NEFT_SIGNED' 
+ESB -> DB : update INWARD_TRN set STATUS_LKP_ID ='NEFT_SIGNED' 
 DB --> ESB : Status updated 
 
 ESB -> MQ : send message to BKP.CBS.NEFT and SFMS.INCOMING queues
